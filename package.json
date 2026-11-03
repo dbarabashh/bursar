@@ -1,0 +1,50 @@
+{
+  "name": "bursar",
+  "version": "0.1.0",
+  "description": "Minimal local wallet for AI agents with spending limits, allowlists & passkey approvals",
+  "private": true,
+  "type": "module",
+  "license": "MIT",
+  "author": "Dima Barabash",
+  "engines": {
+    "node": ">=22.18.0"
+  },
+  "bin": {
+    "bursar": "dist/src/index.js",
+    "bursar-mcp": "dist/src/mcp/server.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "test": "node --test --test-concurrency=1 test/*.test.ts",
+    "dev": "node src/index.ts",
+    "start": "node dist/src/index.js",
+    "sandbox": "node sandbox/run.ts",
+    "sandbox:manual": "node sandbox/manual.ts",
+    "mcp": "node src/mcp/server.ts",
+    "format": "oxfmt --write .",
+    "format:check": "oxfmt --check ."
+  },
+  "dependencies": {
+    "@noble/curves": "2.4.0",
+    "@noble/hashes": "2.4.0",
+    "micro-eth-signer": "0.20.1",
+    "micro-sol-signer": "0.8.2",
+    "yaml": "2.9.1"
+  },
+  "devDependencies": {
+    "@types/node": "26.6.5",
+    "oxfmt": "0.74.0",
+    "typescript": "7.0.2"
+  },
+  "x-why": {
+    "@noble/curves": "audited secp256k1 / ed25519 / p256 primitives (paulmillr)",
+    "@noble/hashes": "audited sha256 / keccak (paulmillr)",
+    "micro-eth-signer": "EIP-712 typed-data and EIP-1559 tx signing on top of noble (paulmillr); pulls @noble/ciphers, micro-packed, @scure/base",
+    "micro-sol-signer": "Solana tx encoding, ATA derivation and ed25519 signing on top of noble (paulmillr); pulls micro-packed@0.8 and @scure/base@2.0",
+    "yaml": "policy file parsing; zero dependencies",
+    "typescript": "dev only: type checking and build",
+    "@types/node": "dev only: Node built-in typings",
+    "oxfmt": "dev only: code formatter (Prettier-compatible), same config as nod-monorepo"
+  }
+}

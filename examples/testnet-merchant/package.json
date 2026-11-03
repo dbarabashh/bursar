@@ -1,0 +1,21 @@
+{
+  "name": "bursar-testnet-merchant",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22.18"
+  },
+  "scripts": {
+    "start": "node server.ts",
+    "offline": "node offline-check.ts"
+  },
+  "dependencies": {
+    "@x402/core": "2.29.0",
+    "@x402/evm": "2.29.0",
+    "@x402/express": "2.29.0",
+    "express": "5.3.0"
+  },
+  "devDependencies": {
+    "micro-eth-signer": "0.20.1"
+  }
+}

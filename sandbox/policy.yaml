@@ -1,0 +1,68 @@
+version: 1
+
+wallet:
+  env: BURSAR_KEY
+
+agents:
+  - id: nanocode
+    token: ${BURSAR_TOKEN_NANOCODE}
+  - id: researcher
+    token: ${BURSAR_TOKEN_RESEARCHER}
+
+limits:
+  per_tx: { usd: 1.00 }
+  per_day: { usd: 5.00, window: calendar_utc }
+  velocity: { max_tx: 60, per_seconds: 60 }
+  per_recipient_day: { usd: 4.00 }
+  wallet_per_day: { usd: 5.50 }
+  per_month: { usd: 50.00 }
+  per_task: { max_usd: 2.00, max_ttl_seconds: 3600 }
+  approval_threshold:
+    { usd: 0.50, timeout_seconds: 300, method: '${SANDBOX_APPROVAL}' }
+
+allow:
+  chains: ['eip155:8453', 'solana:mainnet', 'eip155:4217']
+  assets:
+    - {
+        address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        chains: ['eip155:8453'],
+        label: USDC on Base,
+      }
+    - {
+        address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        chains: ['solana:mainnet'],
+        label: USDC on Solana,
+      }
+    - {
+        address: '0x20c0000000000000000000000000000000000000',
+        chains: ['eip155:4217'],
+        label: pathUSD,
+      }
+  recipients:
+    - {
+        address: '0x5afe00000000000000000000000000000000cafe',
+        label: sandbox-merchant,
+      }
+    - {
+        address: '8SFqwqnq4whPhs8icwHA2hQg3hUoN1qrCLK1SBx3WKwe',
+        label: sandbox-solana-merchant,
+        chains: ['solana:mainnet'],
+      }
+    - {
+        address: '0x4444444444444444444444444444444444444444',
+        label: sandbox-mpp-merchant,
+        chains: ['eip155:4217'],
+      }
+
+evm:
+  simulate_before_sign: true
+
+rpc:
+  'eip155:8453': ${SANDBOX_RPC}
+  'eip155:4217': ${SANDBOX_RPC}
+  'solana:mainnet': ${SANDBOX_RPC}
+
+state:
+  dir: ${SANDBOX_STATE}
+
+mode: enforce

@@ -1,0 +1,76 @@
+version: 1
+
+wallet:
+  keyfile: ~/.bursar/key
+  env: BURSAR_KEY
+
+agents:
+  - id: nanocode
+    token: ${BURSAR_TOKEN_NANOCODE}
+
+limits:
+  per_tx: { usd: 1.00 }
+  per_day: { usd: 20.00, window: calendar_utc }
+  velocity: { max_tx: 10, per_seconds: 60 }
+  per_recipient_day: { usd: 5.00 }
+  wallet_per_day: { usd: 30.00 }
+  per_month: { usd: 200.00, window: calendar_utc }
+  per_task: { max_usd: 5.00, max_ttl_seconds: 86400, required: false }
+  approval_threshold:
+    {
+      usd: 0.50,
+      timeout_seconds: 300,
+      method: cli,
+      user_verification: required,
+    }
+
+allow:
+  chains: ['eip155:8453', 'solana:mainnet', 'eip155:4217']
+  assets:
+    - {
+        address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+        decimals: 6,
+        chains: ['eip155:8453'],
+        label: USDC on Base,
+      }
+    - {
+        address: 'EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v',
+        decimals: 6,
+        chains: ['solana:mainnet'],
+        label: USDC on Solana,
+      }
+    - {
+        address: '0x20c0000000000000000000000000000000000000',
+        decimals: 6,
+        chains: ['eip155:4217'],
+        label: pathUSD on Tempo,
+      }
+  recipients:
+    - {
+        address: '0x00000000000000000000000000000000000a1c11',
+        label: replace-with-merchant-payto,
+        max_usd_day: 10,
+      }
+
+require_resource_hash: false
+
+evm:
+  allowed_selectors: ['0xa9059cbb', '0xe3ee160e']
+  simulate_before_sign: true
+  max_network_fee_wei: '1000000000000000'
+
+tempo:
+  allow_client_paid_fees: false
+  max_fee_usd: 0.01
+  gas_limit: 300000
+
+rpc:
+  'eip155:8453': https://mainnet.base.org
+  'eip155:4217': https://rpc.tempo.xyz
+  'solana:mainnet': https://api.mainnet-beta.solana.com
+
+server:
+  host: 127.0.0.1
+  port: 8402
+
+mode: enforce
