@@ -1,5 +1,8 @@
 # bursar
 
+> [!WARNING]
+> bursar is experimental. It has not been audited and has not yet been used with real money. Use it at your own risk, and only with amounts you can afford to lose.
+
 Minimal local wallet for AI agents with spending limits, allowlists & passkey approvals.
 
 - The key never reaches the agent: a separate OS user, and no endpoint that signs arbitrary bytes

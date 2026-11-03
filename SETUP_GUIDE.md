@@ -55,20 +55,20 @@ If the key sits in your home directory and the agent has a shell, every limit de
 ## 2. Check the code before installing
 
 ```sh
-cd ~/dev/bursar
+git clone https://github.com/dbarabashh/bursar.git
+cd bursar
 npm ci
 npm test                 # 92 tests
 npm run sandbox          # 18 scenarios with fake money, no network
 ```
 
-If anything is red, stop here.
+If anything is red, stop here. All commands below run from the root of this clone unless a step says otherwise.
 
 ---
 
 ## 3. Install under a separate user
 
 ```sh
-cd ~/dev/bursar
 sudo NODE="$(command -v node)" PAY_TO=0xYOUR_SECOND_ADDRESS ./scripts/install-macos.sh
 ```
 
@@ -139,7 +139,7 @@ From now on, every payment above the threshold waits until you open `http://loca
 claude mcp add bursar --scope user \
   -e BURSAR_URL=http://127.0.0.1:8402 \
   -e BURSAR_TOKEN=TOKEN_FROM_STEP_3 \
-  -- "$(command -v node)" ~/dev/bursar/src/mcp/server.ts
+  -- "$(command -v node)" "$PWD/src/mcp/server.ts"
 ```
 
 Restart Claude Code and run `/mcp`. You should see `bursar · connected` with three tools.
@@ -163,7 +163,7 @@ You do not need ETH for gas. With x402 the facilitator sends the transaction and
 This is a real x402 server built on Coinbase's official `@x402/express` package. It talks to the real facilitator at `https://x402.org/facilitator`, so payments actually settle on Base Sepolia. The merchant's dependencies stay in its own directory and never reach bursar.
 
 ```sh
-cd ~/dev/bursar/examples/testnet-merchant
+cd examples/testnet-merchant
 npm ci
 PAY_TO=0xYOUR_SECOND_ADDRESS npm start
 ```

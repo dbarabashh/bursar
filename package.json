@@ -45,6 +45,6 @@
     "yaml": "policy file parsing; zero dependencies",
     "typescript": "dev only: type checking and build",
     "@types/node": "dev only: Node built-in typings",
-    "oxfmt": "dev only: code formatter (Prettier-compatible), same config as nod-monorepo"
+    "oxfmt": "dev only: code formatter (Prettier-compatible)"
   }
 }
