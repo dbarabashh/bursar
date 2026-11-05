@@ -22,7 +22,9 @@ export type AuditEvent = {
     | 'approval_expired'
     | 'approval_resolved'
     | 'conflict'
-    | 'task_opened';
+    | 'task_opened'
+    | 'recipient_added'
+    | 'recipient_removed';
   idempotencyKey?: string;
   reason?: string;
   usd?: string;
@@ -32,6 +34,8 @@ export type AuditEvent = {
   via?: string;
   taskId?: string;
   credential?: string;
+  recipient?: string;
+  chain?: string;
 };
 
 const GENESIS = '0'.repeat(64);

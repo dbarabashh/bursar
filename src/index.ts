@@ -3,7 +3,7 @@ import { parseArgs } from 'node:util';
 import { createApp } from './api/server.ts';
 import { resolveApproval } from './approval/resolve.ts';
 import { AuditLog } from './audit.ts';
-import { loadPolicy, type Policy } from './config.ts';
+import { loadPolicy, normalizeAddress, type Policy } from './config.ts';
 import { Ledger } from './ledger/store.ts';
 import { openSigner } from './signer/index.ts';
 import { generateKeyFile } from './signer/keystore.ts';
@@ -18,6 +18,8 @@ Usage:
   bursar approvals --policy <file>
   bursar approve   <approvalId> --policy <file>
   bursar deny      <approvalId> --policy <file>
+  bursar recipients        --policy <file>
+  bursar recipients remove <address> --policy <file>
   bursar passkey add    --policy <file> [--name <label>]
   bursar passkey list   --policy <file>
   bursar passkey remove <credentialId> --policy <file>
@@ -125,8 +127,12 @@ async function main(): Promise<void> {
         const where = passkey
           ? `  approve at http://localhost:${policy.server.port}/approve/${a.id}`
           : '';
+        const why =
+          a.context.reason === 'new_recipient'
+            ? `  new recipient${a.context.resourceUrl ? ` (${a.context.resourceUrl})` : ''}`
+            : '';
         process.stdout.write(
-          `${a.id}  agent=${a.agent}  expires=${new Date(a.expiresAt).toISOString()}  ${a.intentJson}${where}\n`,
+          `${a.id}  agent=${a.agent}  expires=${new Date(a.expiresAt).toISOString()}${why}  ${a.intentJson}${where}\n`,
         );
       }
       ledger.close();
@@ -159,6 +165,61 @@ async function main(): Promise<void> {
         `${arg} ${decision}; the agent's next /v1/sign retry with the same idempotencyKey completes it\n`,
       );
       return;
+    }
+    case 'recipients': {
+      const policy = policyFrom(values.policy);
+      const ledger = new Ledger(policy.state.ledgerPath);
+      try {
+        if (arg === undefined || arg === 'list') {
+          if (policy.allow.recipients === 'any')
+            process.stdout.write('policy: any recipient (recipients: any)\n');
+          else
+            for (const r of policy.allow.recipients)
+              process.stdout.write(
+                `${r.address}  ${r.label ?? '-'}  chains=${r.chains?.join(',') ?? 'any'}  source=policy\n`,
+              );
+          for (const r of ledger.listLearnedRecipients())
+            process.stdout.write(
+              `${r.address}  ${r.label}  chains=${r.chain}  source=passkey  added=${new Date(r.created).toISOString()}\n`,
+            );
+          if (policy.allow.unknownRecipients === 'ask')
+            process.stdout.write(
+              'new recipients: ask (approve them with your passkey when an agent first pays them)\n',
+            );
+          return;
+        }
+        if (arg !== 'remove')
+          fail(
+            'usage: bursar recipients [list] | bursar recipients remove <address>',
+          );
+        if (arg2 === undefined) fail('recipients remove needs an address');
+        const address = normalizeAddress(arg2);
+        const removed = ledger.removeLearnedRecipient(address);
+        if (removed === 0) {
+          const inPolicy =
+            policy.allow.recipients !== 'any' &&
+            policy.allow.recipients.some((r) => r.address === address);
+          fail(
+            inPolicy
+              ? `${arg2} is in the policy file; remove it there (sudo nano ${values.policy ?? 'policy.yaml'})`
+              : `${arg2} is not on the list`,
+          );
+        }
+        const audit = new AuditLog(policy.state.auditPath, (fn) =>
+          ledger.transaction(fn),
+        );
+        audit.append({
+          ts: Date.now(),
+          agent: '-',
+          event: 'recipient_removed',
+          recipient: address,
+          via: 'cli',
+        });
+        process.stdout.write(`removed ${address}\n`);
+        return;
+      } finally {
+        ledger.close();
+      }
     }
     case 'passkey': {
       const policy = policyFrom(values.policy);
@@ -218,6 +279,8 @@ async function main(): Promise<void> {
       }
       return;
     }
+    case 'setup':
+      fail('run setup from the bursar repo as your own user: npm run setup');
     case 'keygen': {
       if (values.out === undefined) fail('--out is required');
       generateKeyFile(values.out);

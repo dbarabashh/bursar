@@ -2,6 +2,7 @@ import { chmodSync, existsSync, mkdirSync } from 'node:fs';
 import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import type { PasskeyCredential } from '../approval/passkey.ts';
+import type { ApprovalReason } from '../policy/engine.ts';
 import type { LedgerSnapshot } from '../policy/limits.ts';
 
 export type StoredResponse = {
@@ -23,6 +24,11 @@ export type ApprovalStatus =
   | 'expired'
   | 'consumed';
 
+export type ApprovalContext = {
+  reason: ApprovalReason;
+  resourceUrl: string | null;
+};
+
 export type ApprovalRow = {
   id: string;
   agent: string;
@@ -30,6 +36,7 @@ export type ApprovalRow = {
   status: ApprovalStatus;
   ts: number;
   expiresAt: number;
+  context: ApprovalContext;
 };
 
 type ApprovalDbRow = {
@@ -39,7 +46,17 @@ type ApprovalDbRow = {
   status: ApprovalStatus;
   ts: number;
   expires_at: number;
+  context_json: string | null;
 };
+
+function parseContext(raw: string | null): ApprovalContext {
+  if (raw === null) return { reason: 'threshold', resourceUrl: null };
+  const v = JSON.parse(raw) as Partial<ApprovalContext>;
+  return {
+    reason: v.reason === 'new_recipient' ? 'new_recipient' : 'threshold',
+    resourceUrl: typeof v.resourceUrl === 'string' ? v.resourceUrl : null,
+  };
+}
 
 function toApprovalRow(r: ApprovalDbRow): ApprovalRow {
   return {
@@ -49,6 +66,36 @@ function toApprovalRow(r: ApprovalDbRow): ApprovalRow {
     status: r.status,
     ts: Number(r.ts),
     expiresAt: Number(r.expires_at),
+    context: parseContext(r.context_json),
+  };
+}
+
+export type LearnedRecipient = {
+  address: string;
+  chain: string;
+  label: string;
+  created: number;
+  approvalId: string;
+  credential: string;
+};
+
+type LearnedDbRow = {
+  address: string;
+  chain: string;
+  label: string;
+  created: number;
+  approval_id: string;
+  credential: string;
+};
+
+function toLearned(r: LearnedDbRow): LearnedRecipient {
+  return {
+    address: r.address,
+    chain: r.chain,
+    label: r.label,
+    created: Number(r.created),
+    approvalId: r.approval_id,
+    credential: r.credential,
   };
 }
 
@@ -102,6 +149,15 @@ CREATE TABLE IF NOT EXISTS approvals (
   ts INTEGER NOT NULL,
   expires_at INTEGER NOT NULL,
   resolved_at INTEGER
+);
+CREATE TABLE IF NOT EXISTS learned_recipients (
+  address TEXT NOT NULL,
+  chain TEXT NOT NULL,
+  label TEXT NOT NULL,
+  created INTEGER NOT NULL,
+  approval_id TEXT NOT NULL,
+  credential TEXT NOT NULL,
+  PRIMARY KEY (address, chain)
 );
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
@@ -172,15 +228,16 @@ export class Ledger {
       this.db.exec('BEGIN IMMEDIATE');
       try {
         this.db.exec(SCHEMA);
-        const cols = this.db.prepare('PRAGMA table_info(spend)').all() as {
-          name: string;
-        }[];
-        if (!cols.some((c) => c.name === 'fee_usd'))
-          this.db.exec(
-            'ALTER TABLE spend ADD COLUMN fee_usd INTEGER NOT NULL DEFAULT 0',
-          );
-        if (!cols.some((c) => c.name === 'task_id'))
-          this.db.exec('ALTER TABLE spend ADD COLUMN task_id TEXT');
+        const addColumn = (table: string, column: string, type: string) => {
+          const cols = this.db.prepare(`PRAGMA table_info(${table})`).all() as {
+            name: string;
+          }[];
+          if (!cols.some((c) => c.name === column))
+            this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+        };
+        addColumn('spend', 'fee_usd', 'INTEGER NOT NULL DEFAULT 0');
+        addColumn('spend', 'task_id', 'TEXT');
+        addColumn('approvals', 'context_json', 'TEXT');
         this.db.exec('CREATE INDEX IF NOT EXISTS spend_task ON spend(task_id)');
         this.db.exec('COMMIT');
       } catch (e) {
@@ -251,16 +308,28 @@ export class Ledger {
         'INSERT OR REPLACE INTO idempotency (key, intent_hash, result_json, ts) VALUES (?, ?, ?, ?)',
       ),
       addApproval: this.db.prepare(
-        'INSERT INTO approvals (id, agent, intent_json, status, ts, expires_at) VALUES (?, ?, ?, ?, ?, ?)',
+        'INSERT INTO approvals (id, agent, intent_json, status, ts, expires_at, context_json) VALUES (?, ?, ?, ?, ?, ?, ?)',
       ),
       getApproval: this.db.prepare(
-        'SELECT id, agent, intent_json, status, ts, expires_at FROM approvals WHERE id = ?',
+        'SELECT id, agent, intent_json, status, ts, expires_at, context_json FROM approvals WHERE id = ?',
       ),
       setApproval: this.db.prepare(
         'UPDATE approvals SET status = ?, resolved_at = ? WHERE id = ? AND status = ?',
       ),
+      addLearned: this.db.prepare(
+        'INSERT OR IGNORE INTO learned_recipients (address, chain, label, created, approval_id, credential) VALUES (?, ?, ?, ?, ?, ?)',
+      ),
+      listLearned: this.db.prepare(
+        'SELECT address, chain, label, created, approval_id, credential FROM learned_recipients ORDER BY created',
+      ),
+      learnedFor: this.db.prepare(
+        'SELECT address, chain, label, created, approval_id, credential FROM learned_recipients WHERE address = ?',
+      ),
+      removeLearned: this.db.prepare(
+        'DELETE FROM learned_recipients WHERE address = ?',
+      ),
       listApprovals: this.db.prepare(
-        'SELECT id, agent, intent_json, status, ts, expires_at FROM approvals WHERE status = ? ORDER BY ts',
+        'SELECT id, agent, intent_json, status, ts, expires_at, context_json FROM approvals WHERE status = ? ORDER BY ts',
       ),
     };
     this.stmts.daySpent.setReadBigInts(true);
@@ -487,7 +556,37 @@ export class Ledger {
       row.status,
       row.ts,
       row.expiresAt,
+      JSON.stringify(row.context),
     );
+  }
+
+  addLearnedRecipient(r: LearnedRecipient): boolean {
+    return (
+      Number(
+        this.stmts.addLearned.run(
+          r.address,
+          r.chain,
+          r.label,
+          r.created,
+          r.approvalId,
+          r.credential,
+        ).changes,
+      ) === 1
+    );
+  }
+
+  listLearnedRecipients(): LearnedRecipient[] {
+    return (this.stmts.listLearned.all() as LearnedDbRow[]).map(toLearned);
+  }
+
+  learnedRecipientsFor(address: string): LearnedRecipient[] {
+    return (this.stmts.learnedFor.all(address) as LearnedDbRow[]).map(
+      toLearned,
+    );
+  }
+
+  removeLearnedRecipient(address: string): number {
+    return Number(this.stmts.removeLearned.run(address).changes);
   }
 
   getApproval(id: string): ApprovalRow | null {

@@ -7,6 +7,14 @@ import { AuditLog } from '../src/audit.ts';
 import { parsePolicy, type Policy } from '../src/config.ts';
 import { Ledger } from '../src/ledger/store.ts';
 import { openSigner, type Signer } from '../src/signer/index.ts';
+import { randomBytes } from '@noble/hashes/utils.js';
+import {
+  approvalChallenge,
+  parseRegistrationBody,
+  verifyRegistration,
+  type ApprovalDecision,
+} from '../src/approval/passkey.ts';
+import { http, softAuthenticator } from './fixtures/authenticator.ts';
 
 export const EVM_KEY = `0x${'11'.repeat(32)}`;
 export const SOL_KEY = '22'.repeat(32);
@@ -45,6 +53,7 @@ export type PolicyOptions = {
   perMonth?: { usd: string; window?: 'calendar_utc' | 'rolling_30d' };
   perTask?: { maxUsd?: string; maxTtlSeconds?: number; required?: boolean };
   rpc?: Record<string, string>;
+  unknownRecipients?: 'deny' | 'ask';
 };
 
 export function policyYaml(o: PolicyOptions = {}): string {
@@ -106,6 +115,9 @@ export function policyYaml(o: PolicyOptions = {}): string {
     `    - { address: '${MERCHANT_B}', label: merchant-b }`,
     `    - { address: '${BASE_ONLY}', label: base-only, chains: ['eip155:8453'] }`,
     `    - { address: '${SOL_MERCHANT}', label: sol-merchant }`,
+    ...(o.unknownRecipients === undefined
+      ? []
+      : [`  unknown_recipients: ${o.unknownRecipients}`]),
     `require_resource_hash: ${o.requireResourceHash ? 'true' : 'false'}`,
     'evm:',
     "  allowed_selectors: ['0xa9059cbb', '0xe3ee160e']",
@@ -317,4 +329,63 @@ export async function sign(
 ): Promise<Res> {
   const r = await env.app.sign(agent, body);
   return { status: r.status, body: r.body as Record<string, unknown> };
+}
+
+export function auditEvents(
+  env: TestEnv,
+  agent: string | null = null,
+): Record<string, unknown>[] {
+  return env.audit
+    .readSince(0, agent)
+    .map((l) => JSON.parse(l) as Record<string, unknown>);
+}
+
+export type PasskeyEnv = {
+  env: TestEnv;
+  port: number;
+  origin: string;
+  auth: ReturnType<typeof softAuthenticator>;
+  close: () => void;
+};
+
+// A listening daemon with one registered passkey named "laptop".
+export async function startWithPasskey(
+  opts: PolicyOptions,
+): Promise<PasskeyEnv> {
+  const env = makeEnv(opts);
+  const { server, port } = await env.app.listen(0, '127.0.0.1');
+  const origin = `http://localhost:${port}`;
+  const auth = softAuthenticator();
+  const challenge = randomBytes(32);
+  const cred = verifyRegistration(
+    parseRegistrationBody(auth.register({ challenge, origin })),
+    { challenge, origin, userVerification: 'required' },
+  );
+  env.ledger.addPasskey({ ...cred, name: 'laptop' }, env.clock.now());
+  return {
+    env,
+    port,
+    origin,
+    auth,
+    close: () => {
+      server.close();
+      cleanup(env);
+    },
+  };
+}
+
+// Sign the approval challenge for `decision` with the passkey and POST it.
+export function decideWithPasskey(
+  s: PasskeyEnv,
+  id: string,
+  decision: ApprovalDecision,
+): ReturnType<typeof http> {
+  const row = s.env.ledger.getApproval(id);
+  if (row === null) throw new Error(`no approval ${id}`);
+  const body = s.auth.assert({
+    challenge: approvalChallenge(id, row.intentJson, decision),
+    origin: s.origin,
+    decision,
+  });
+  return http(s.port, `/approve/${id}`, { method: 'POST', body });
 }

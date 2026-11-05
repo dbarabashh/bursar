@@ -307,13 +307,17 @@ export function createMcpServer(deps: McpDeps) {
       if (result['status'] !== 'pending') break;
       if (Date.now() + pollMs > deadline) {
         pending.set(pendingKey, request);
+        const fresh = result['reason'] === 'new_recipient';
         return text({
           paid: false,
           status: 'pending_approval',
+          reason: result['reason'] ?? 'threshold',
           approvalId: result['approvalId'],
           approvalUrl: result['approvalUrl'],
           expiresAt: result['expiresAt'],
-          next: 'A human has to approve this payment. Show them the approvalUrl (or tell them to run: bursar approvals), and call pay again with the same arguments after they confirm.',
+          next: fresh
+            ? 'This service is new to bursar, so a human has to allow it once. Show them the approvalUrl; they can allow this payment or always allow the service. Call pay again with the same arguments after they confirm.'
+            : 'A human has to approve this payment. Show them the approvalUrl (or tell them to run: bursar approvals), and call pay again with the same arguments after they confirm.',
         });
       }
       await sleep(pollMs);

@@ -15,6 +15,8 @@ const SPKI_P256_PREFIX = Uint8Array.from(
 
 export type UserVerification = 'required' | 'preferred';
 
+export type ApprovalDecision = 'approved' | 'denied' | 'remember';
+
 export type PasskeyCredential = {
   credentialId: string;
   publicKey: Uint8Array;
@@ -66,7 +68,7 @@ export function fromB64url(v: unknown, field: string): Uint8Array {
 export function approvalChallenge(
   approvalId: string,
   intentJson: string,
-  decision: 'approved' | 'denied',
+  decision: ApprovalDecision,
 ): Uint8Array {
   return sha256(
     utf8ToBytes(
@@ -203,12 +205,16 @@ export function verifyAssertion(
 }
 
 export function parseAssertionBody(body: unknown): {
-  decision: 'approved' | 'denied';
+  decision: ApprovalDecision;
   assertion: PasskeyAssertion;
 } {
   if (!isRecord(body)) throw new PasskeyError('body_invalid');
   const decision = body['decision'];
-  if (decision !== 'approved' && decision !== 'denied')
+  if (
+    decision !== 'approved' &&
+    decision !== 'denied' &&
+    decision !== 'remember'
+  )
     throw new PasskeyError('decision_invalid');
   const credentialId = body['credentialId'];
   if (

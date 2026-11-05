@@ -1,5 +1,6 @@
 import { randomBytes } from '@noble/hashes/utils.js';
 import { b64url } from './passkey.ts';
+import { recipientLabel } from './resolve.ts';
 
 export type Page = { body: string; headers: Record<string, string> };
 
@@ -34,7 +35,10 @@ dl { display: grid; grid-template-columns: max-content 1fr; gap: 6px 16px; margi
 dt { color: var(--muted); }
 dd { margin: 0; font-family: ui-monospace, monospace; font-size: 13px; overflow-wrap: anywhere; }
 .amount { font-size: 28px; font-weight: 600; margin: 16px 0 0; }
-.actions { display: flex; gap: 12px; margin-top: 20px; }
+.actions { display: flex; flex-wrap: wrap; gap: 12px; margin-top: 20px; }
+.actions button { min-width: 140px; }
+.service { font-size: 22px; font-weight: 600; margin: 16px 0 0; overflow-wrap: anywhere; }
+.note { background: var(--bg); border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
 button { flex: 1; font: inherit; font-weight: 600; padding: 12px; border-radius: 10px; border: 1px solid var(--line); cursor: pointer; background: transparent; color: var(--fg); }
 button.primary { background: var(--ok); border-color: var(--ok); color: #fff; }
 button:disabled { opacity: .5; cursor: default; }
@@ -85,6 +89,8 @@ export type ApprovalView = {
   intent: Record<string, unknown>;
   usd: string | null;
   pending: boolean;
+  newRecipient?: boolean;
+  resourceUrl?: string | null;
 };
 
 export function approvalPage(
@@ -103,11 +109,28 @@ export function approvalPage(
       : `<dt>${escapeHtml(k)}</dt><dd>${escapeHtml(String(v))}</dd>`;
   const fee = intent['fee'] as { amount?: string } | undefined;
   const pending = view.pending;
-  const content = `
-<h1>Payment approval</h1>
+  const fresh = view.newRecipient === true;
+  const title = fresh
+    ? 'New service wants to be paid'
+    : `Approve $${view.usd ?? ''} payment`;
+  const amount =
+    view.usd === null ? '' : `<p class="amount">$${escapeHtml(view.usd)}</p>`;
+  const header = fresh
+    ? `<h1>${title}</h1>
+<p class="muted">Agent <b>${escapeHtml(view.agent)}</b> wants to pay a recipient that is not on your list yet.</p>
+<p class="service">${escapeHtml(recipientLabel(view.resourceUrl ?? null))}</p>
+${amount}
+<p class="note">“Always allow” adds this recipient on this chain to your list. Later payments to it still follow every limit, and amounts above your approval threshold still ask you. Remove it any time with <code>bursar recipients remove</code>.</p>`
+    : `<h1>Payment approval</h1>
 <p class="muted">Agent <b>${escapeHtml(view.agent)}</b> asks to pay. Check the details, then confirm with your passkey.</p>
-${view.usd === null ? '' : `<p class="amount">$${escapeHtml(view.usd)}</p>`}
+${amount}`;
+  const buttons = fresh
+    ? `<div class="actions"><button class="primary" id="remember" type="button">Always allow this service</button><button id="approve" type="button">Allow once</button><button id="deny" type="button">Deny</button></div>`
+    : `<div class="actions"><button class="primary" id="approve" type="button">Approve with passkey</button><button id="deny" type="button">Deny</button></div>`;
+  const content = `
+${header}
 <dl>
+${fresh && view.resourceUrl ? row('Resource', view.resourceUrl) : ''}
 ${row('Recipient', intent['recipient'])}
 ${row('Chain', intent['chain'])}
 ${row('Asset', intent['asset'])}
@@ -121,7 +144,7 @@ ${row('Status', pending ? 'pending' : view.status === 'pending' ? 'expired' : vi
 </dl>
 ${
   pending
-    ? `<div class="actions"><button class="primary" id="approve" type="button">Approve with passkey</button><button id="deny" type="button">Deny</button></div>`
+    ? buttons
     : '<p class="muted">This request can no longer be changed.</p>'
 }`;
   const script = `
@@ -144,7 +167,8 @@ async function decide(decision) {
       body: JSON.stringify({ decision, credentialId: toB64(cred.rawId), clientDataJSON: toB64(r.clientDataJSON), authenticatorData: toB64(r.authenticatorData), signature: toB64(r.signature) }),
     });
     const out = await res.json();
-    if (res.ok) { say(decision === 'approved' ? 'Approved. The agent will complete the payment on its next retry.' : 'Denied.', 'ok'); return; }
+    const done = { approved: 'Approved. The agent will complete the payment on its next retry.', remember: 'Approved, and this service is now on your list. The agent will complete the payment on its next retry.', denied: 'Denied.' };
+    if (res.ok) { say(done[decision], 'ok'); return; }
     say('Rejected: ' + out.error, 'bad');
   } catch (err) {
     say('Cancelled: ' + err.message, 'bad');
@@ -153,8 +177,9 @@ async function decide(decision) {
 }
 document.getElementById('approve')?.addEventListener('click', () => decide('approved'));
 document.getElementById('deny')?.addEventListener('click', () => decide('denied'));
+document.getElementById('remember')?.addEventListener('click', () => decide('remember'));
 `;
-  return shell(`Approve $${view.usd ?? ''} payment`, content, cfg, script);
+  return shell(title, content, cfg, script);
 }
 
 export function registrationPage(cfg: {

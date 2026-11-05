@@ -25,7 +25,13 @@ export type ApprovalDeps = {
 
 const MAX_BODY = 16 * 1024;
 
-class Rollback extends Error {}
+class Rollback extends Error {
+  readonly status: number;
+  constructor(status: number, message: string) {
+    super(message);
+    this.status = status;
+  }
+}
 
 function err(status: number, error: string): HttpResult {
   return { status, body: { status: 'error', error } };
@@ -91,6 +97,7 @@ export async function handleApprovalRoute(
   if (approval === null) return err(404, 'not_found');
   const userVerification =
     deps.policy.limits.approval?.userVerification ?? 'required';
+  const newRecipient = approval.context.reason === 'new_recipient';
 
   if (req.method === 'GET') {
     const intent = JSON.parse(approval.intentJson) as Record<string, unknown>;
@@ -103,6 +110,8 @@ export async function handleApprovalRoute(
         intent,
         usd: displayUsd(intent),
         pending: approval.status === 'pending' && now() < approval.expiresAt,
+        newRecipient,
+        resourceUrl: approval.context.resourceUrl,
       },
       {
         rpId: RP_ID,
@@ -111,6 +120,13 @@ export async function handleApprovalRoute(
             approvalChallenge(id, approval.intentJson, 'approved'),
           ),
           denied: b64url(approvalChallenge(id, approval.intentJson, 'denied')),
+          ...(newRecipient
+            ? {
+                remember: b64url(
+                  approvalChallenge(id, approval.intentJson, 'remember'),
+                ),
+              }
+            : {}),
         },
         credentials: ledger.listPasskeys().map((p) => p.credentialId),
         userVerification,
@@ -147,17 +163,19 @@ export async function handleApprovalRoute(
   try {
     ledger.transaction(() => {
       if (!ledger.bumpSignCount(cred.credentialId, cred.signCount, signCount))
-        throw new Rollback('sign_count_race');
+        throw new Rollback(409, 'sign_count_race');
       const outcome = resolveApproval(ledger, audit, id, parsed.decision, {
         now,
         via: 'passkey',
         method: 'passkey',
         credential: cred.name || cred.credentialId,
       });
-      if (outcome !== 'resolved') throw new Rollback('approval_not_pending');
+      if (outcome === 'remember_not_allowed') throw new Rollback(400, outcome);
+      if (outcome !== 'resolved')
+        throw new Rollback(409, 'approval_not_pending');
     });
   } catch (e) {
-    if (e instanceof Rollback) return err(409, e.message);
+    if (e instanceof Rollback) return err(e.status, e.message);
     throw e;
   }
   return { status: 200, body: { status: parsed.decision, approvalId: id } };

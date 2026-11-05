@@ -100,7 +100,7 @@ export function softAuthenticator(start = 0) {
     assert(o: {
       challenge: Uint8Array;
       origin: string;
-      decision?: 'approved' | 'denied';
+      decision?: 'approved' | 'denied' | 'remember';
       rpId?: string;
       flags?: number;
       type?: string;

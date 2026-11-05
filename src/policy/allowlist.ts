@@ -5,10 +5,42 @@ import {
   type RecipientRule,
 } from '../config.ts';
 import type { PaymentIntent } from '../intent.ts';
+import type { LearnedRecipient } from '../ledger/store.ts';
 
 export type AllowlistResult =
-  | { ok: true; asset: AssetRule; recipient: RecipientRule | null }
+  | {
+      ok: true;
+      asset: AssetRule;
+      recipient: RecipientRule | null;
+      unknown: boolean;
+    }
   | { ok: false; reason: string };
+
+export function learnedRule(r: LearnedRecipient): RecipientRule {
+  return {
+    address: r.address,
+    label: r.label,
+    maxUsdDay: null,
+    chains: [r.chain],
+  };
+}
+
+// Policy recipients plus the ones approved with a passkey, one entry per
+// address (policy entries first), for listings such as budget and report.
+export function listedRecipients(
+  policy: Policy,
+  learned: readonly LearnedRecipient[],
+): RecipientRule[] | 'any' {
+  if (policy.allow.recipients === 'any') return 'any';
+  const out = new Map(policy.allow.recipients.map((r) => [r.address, r]));
+  for (const l of learned) {
+    const known = out.get(l.address);
+    if (known === undefined) out.set(l.address, learnedRule(l));
+    else if (known.chains !== null && !known.chains.includes(l.chain))
+      out.set(l.address, { ...known, chains: [...known.chains, l.chain] });
+  }
+  return [...out.values()];
+}
 
 function onChain(chains: string[] | null, chain: string): boolean {
   return chains === null || chains.includes(chain);
@@ -39,18 +71,27 @@ export function isRouteAllowed(
 export function checkAllowlist(
   policy: Policy,
   intent: PaymentIntent,
+  learned: readonly RecipientRule[],
 ): AllowlistResult {
   if (!policy.allow.chains.includes(intent.chain))
     return { ok: false, reason: 'chain_not_allowed' };
   const asset = findAsset(policy, intent.chain, intent.asset);
   if (!asset) return { ok: false, reason: 'asset_not_allowed' };
   if (policy.allow.recipients === 'any')
-    return { ok: true, asset, recipient: null };
+    return { ok: true, asset, recipient: null, unknown: false };
   const addr = normalizeAddress(intent.recipient);
-  const matches = policy.allow.recipients.filter((r) => r.address === addr);
-  if (matches.length === 0)
-    return { ok: false, reason: 'recipient_not_allowed' };
+  const matches = [...policy.allow.recipients, ...learned].filter(
+    (r) => r.address === addr,
+  );
   const rule = matches.find((r) => onChain(r.chains, intent.chain));
-  if (!rule) return { ok: false, reason: 'recipient_not_allowed_on_chain' };
-  return { ok: true, asset, recipient: rule };
+  if (rule) return { ok: true, asset, recipient: rule, unknown: false };
+  if (policy.allow.unknownRecipients === 'ask')
+    return { ok: true, asset, recipient: null, unknown: true };
+  return {
+    ok: false,
+    reason:
+      matches.length === 0
+        ? 'recipient_not_allowed'
+        : 'recipient_not_allowed_on_chain',
+  };
 }

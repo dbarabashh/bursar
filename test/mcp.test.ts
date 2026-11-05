@@ -217,6 +217,33 @@ describe('mcp server', () => {
     }
   });
 
+  it('tells the agent when a new service needs the human to allow it', async () => {
+    const env = makeEnv({
+      approval: '0.50',
+      approvalMethod: 'passkey',
+      unknownRecipients: 'ask',
+    });
+    const s = await shop({ '/new': { amount: usdc(0.01), payTo: STRANGER } });
+    try {
+      await withDaemon(env, async (bursarUrl) => {
+        const mcp = createMcpServer({
+          bursarUrl,
+          token: TOKEN,
+          sleep: noSleep,
+        });
+        const out = parse(await mcp.callTool('pay', { url: `${s.url}/new` }));
+        assert.equal(out['status'], 'pending_approval');
+        assert.equal(out['reason'], 'new_recipient');
+        assert.match(String(out['approvalUrl']), /\/approve\/apr_/);
+        assert.match(String(out['next']), /new to bursar/);
+        assert.deepEqual(s.paid, []);
+      });
+    } finally {
+      s.close();
+      cleanup(env);
+    }
+  });
+
   it('rejects a bad url before any network call', async () => {
     const mcp = createMcpServer({
       bursarUrl: 'http://127.0.0.1:1',

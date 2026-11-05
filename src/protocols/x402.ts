@@ -220,6 +220,7 @@ export function parseX402(
     raw,
   };
   if (resourceHash !== undefined) intent.resourceHash = resourceHash;
+  if (resourceUrl !== null) intent.resourceUrl = resourceUrl;
   return intent;
 }
 

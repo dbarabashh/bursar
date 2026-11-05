@@ -13,6 +13,7 @@ export type PaymentIntent = {
   amount: bigint;
   decimals: number;
   resourceHash?: string;
+  resourceUrl?: string;
   memo?: Uint8Array;
   fee?: NetworkFee;
   idempotencyKey: string;

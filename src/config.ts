@@ -48,6 +48,7 @@ export type Policy = {
     chains: string[];
     assets: AssetRule[];
     recipients: RecipientRule[] | 'any';
+    unknownRecipients: 'deny' | 'ask';
   };
   requireResourceHash: boolean;
   evm: {
@@ -379,6 +380,7 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
     'chains',
     'assets',
     'recipients',
+    'unknown_recipients',
   ]);
   const chains = list(allowIn['chains'], 'allow.chains').map((c, i) =>
     str(c, `allow.chains[${i}]`),
@@ -439,6 +441,20 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
         chains: chainList(o['chains'], `${path}.chains`),
       };
     });
+  }
+
+  const unknownRecipients = allowIn['unknown_recipients'] ?? 'deny';
+  if (unknownRecipients !== 'deny' && unknownRecipients !== 'ask')
+    throw new PolicyError('allow.unknown_recipients: expected deny or ask');
+  if (unknownRecipients === 'ask') {
+    if (recipients === 'any')
+      throw new PolicyError(
+        'allow.unknown_recipients: ask has no effect with recipients: any',
+      );
+    if (limits.approval?.method !== 'passkey')
+      throw new PolicyError(
+        'allow.unknown_recipients: ask needs limits.approval_threshold.method: passkey, so only a human can add a recipient',
+      );
   }
 
   const evmIn =
@@ -524,7 +540,7 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
     wallet,
     agents,
     limits,
-    allow: { chains, assets, recipients },
+    allow: { chains, assets, recipients, unknownRecipients },
     requireResourceHash: bool(
       root['require_resource_hash'],
       'require_resource_hash',

@@ -11,7 +11,7 @@ SRC=$(cd "$(dirname "$0")/.." && pwd)
 
 die() { echo "install: $*" >&2; exit 1; }
 
-[ "$(id -u)" = 0 ] || die 'run with sudo: sudo NODE="$(command -v node)" PAY_TO=0x... ./scripts/install-macos.sh'
+[ "$(id -u)" = 0 ] || die 'run with sudo: sudo NODE="$(command -v node)" ./scripts/install-macos.sh'
 [ -n "${NODE:-}" ] && [ -x "$NODE" ] || die 'pass NODE="$(command -v node)" so the daemon gets the same Node 22+ you use'
 "$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=18)?0:1)' || die "Node 22.18+ is required ($NODE is $("$NODE" -v))"
 [ -d "$SRC/node_modules/@noble/curves" ] || die "run npm ci in $SRC first"
@@ -69,16 +69,35 @@ if [ ! -f "$STATE/key" ]; then
 fi
 
 NEW_TOKEN=
-if [ ! -f "$STATE/policy.yaml" ]; then
-  [ -n "${PAY_TO:-}" ] || die 'first install needs PAY_TO=0x... (the address your test merchant is paid to)'
-  echo "$PAY_TO" | grep -Eq '^0x[0-9a-fA-F]{40}$' || die "PAY_TO is not an EVM address: $PAY_TO"
+if [ -n "${POLICY_FILE:-}" ]; then
+  # A policy prepared by `npm run setup`; it already holds its own agent token.
+  [ -f "$POLICY_FILE" ] || die "POLICY_FILE $POLICY_FILE does not exist"
+  if [ -f "$STATE/policy.yaml" ]; then
+    [ "${REPLACE_POLICY:-}" = 1 ] || die "$STATE/policy.yaml exists; pass REPLACE_POLICY=1 to replace it"
+    cp -p "$STATE/policy.yaml" "$STATE/policy.yaml.bak"
+  fi
+  install -o root -g $RUNAS -m 640 "$POLICY_FILE" "$STATE/policy.yaml"
+  echo "wrote $STATE/policy.yaml from setup (root owns it, $RUNAS can only read it)"
+elif [ ! -f "$STATE/policy.yaml" ]; then
+  # The same policy `npm run setup` writes with its defaults (testnet, careful limits).
   NEW_TOKEN=$(openssl rand -hex 24)
-  sed -e "s/__AGENT_TOKEN__/$NEW_TOKEN/" -e "s/__PAY_TO__/$PAY_TO/" "$SRC/policy.testnet.example.yaml" > "$STATE/policy.yaml"
+  sudo -u $RUNAS "$PREFIX/bin/node" "$PREFIX/app/src/setup.ts" --print-policy --yes \
+    | sed "s/__AGENT_TOKEN_SET_BY_INSTALLER__/$NEW_TOKEN/" > "$STATE/policy.yaml"
+  if ! grep -q "$NEW_TOKEN" "$STATE/policy.yaml" || grep -q __AGENT_TOKEN_SET_BY_INSTALLER__ "$STATE/policy.yaml"; then
+    rm -f "$STATE/policy.yaml"
+    die "could not write the default policy (npm run setup -- --print-policy --yes failed)"
+  fi
   chown root:$RUNAS "$STATE/policy.yaml"
   chmod 640 "$STATE/policy.yaml"
   echo "wrote $STATE/policy.yaml (root owns it, $RUNAS can only read it)"
 fi
-sudo -u $RUNAS "$PREFIX/bin/node" "$PREFIX/app/src/index.ts" address --policy "$STATE/policy.yaml" >/dev/null || die "policy check failed, fix $STATE/policy.yaml (sudo nano $STATE/policy.yaml)"
+if ! sudo -u $RUNAS "$PREFIX/bin/node" "$PREFIX/app/src/index.ts" address --policy "$STATE/policy.yaml" >/dev/null; then
+  if [ -n "${POLICY_FILE:-}" ] && [ -f "$STATE/policy.yaml.bak" ]; then
+    mv "$STATE/policy.yaml.bak" "$STATE/policy.yaml"
+    die "the new policy did not pass the check; the previous one is restored"
+  fi
+  die "policy check failed, fix $STATE/policy.yaml (sudo nano $STATE/policy.yaml)"
+fi
 
 cat > "$PLIST" <<PL
 <?xml version="1.0" encoding="UTF-8"?>

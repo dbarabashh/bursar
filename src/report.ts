@@ -1,3 +1,4 @@
+import { listedRecipients } from './policy/allowlist.ts';
 import type { AuditLog } from './audit.ts';
 import type { Policy } from './config.ts';
 import type { Ledger, SpendGroup } from './ledger/store.ts';
@@ -89,10 +90,9 @@ export function buildReport(
   const agents = ledger.spendBy('agent', period.from, period.to);
   const recipients = ledger.spendBy('recipient', period.from, period.to);
   const tasks = ledger.spendBy('task', period.from, period.to);
+  const listed = listedRecipients(policy, ledger.listLearnedRecipients());
   const labels = new Map(
-    policy.allow.recipients === 'any'
-      ? []
-      : policy.allow.recipients.map((r) => [r.address, r.label]),
+    listed === 'any' ? [] : listed.map((r) => [r.address, r.label]),
   );
 
   const events = audit

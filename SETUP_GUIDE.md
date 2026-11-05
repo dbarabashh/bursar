@@ -2,6 +2,27 @@
 
 This guide takes you from nothing to Claude Code buying something with real USDC while you control every dollar. You run the whole thing on a testnet first (Base Sepolia, free money), then change a few lines and move to mainnet.
 
+## Quick start: `npm run setup`
+
+If you just want it working, this replaces steps 3–5 below:
+
+```sh
+git clone https://github.com/dbarabashh/bursar.git && cd bursar
+npm ci && npm test
+npm run setup
+```
+
+Setup asks three things: testnet or real money, how much the agent may spend (a careful or normal preset, or your own numbers), and above which amount to ask for Touch ID. Then it:
+
+1. installs the daemon under a hidden user `_bursar` (one sudo password);
+2. opens a page in the browser to register your Touch ID;
+3. connects Claude Code (`claude mcp add`), so you never see or copy the agent token;
+4. shows the wallet address, and waits until the USDC arrives if you like.
+
+You do not enter any merchant addresses: the first time the agent pays a service, a page asks you to allow it. Run `npm run setup` again to change the limits or switch to mainnet; the key, the history and the allowed services stay. `npm run setup -- --help` lists flags such as `--dry-run`, which shows every command without running it.
+
+The rest of this guide explains each step by hand.
+
 ---
 
 ## 0. How it fits together
@@ -48,7 +69,7 @@ If the key sits in your home directory and the agent has a shell, every limit de
 - A Mac with Touch ID, and Chrome (for passkey approvals).
 - Node 22.18+ (`node -v`).
 - Admin rights on the Mac (for `sudo`).
-- **A second address for the test merchant to receive payments.** Any EVM address you control, for example from Rabby or MetaMask. On the testnet you are paying yourself.
+- **A second address for the test merchant to receive payments** (only for the testnet merchant in step 7). Any EVM address you control, for example from Rabby or MetaMask. On the testnet you are paying yourself.
 
 ---
 
@@ -58,7 +79,7 @@ If the key sits in your home directory and the agent has a shell, every limit de
 git clone https://github.com/dbarabashh/bursar.git
 cd bursar
 npm ci
-npm test                 # 92 tests
+npm test                 # 114 tests
 npm run sandbox          # 18 scenarios with fake money, no network
 ```
 
@@ -69,8 +90,10 @@ If anything is red, stop here. All commands below run from the root of this clon
 ## 3. Install under a separate user
 
 ```sh
-sudo NODE="$(command -v node)" PAY_TO=0xYOUR_SECOND_ADDRESS ./scripts/install-macos.sh
+sudo NODE="$(command -v node)" ./scripts/install-macos.sh
 ```
+
+You do not need to know any merchant address up front.
 
 What the script does (read `scripts/install-macos.sh` before you run it, it is about 120 lines of sh):
 
@@ -89,7 +112,7 @@ At the end the script prints two things:
 1. **The bursar wallet's EVM address.** This is where you put money.
 2. **The agent token** for `claude-code`. It is shown once, and it is also stored in the policy. It is not a key: all it lets you do is ask bursar to sign within the policy.
 
-The starting policy (`policy.testnet.example.yaml`) is strict on purpose:
+The starting policy (the same one `npm run setup` writes with its defaults, see `npm run setup -- --print-policy --yes`) is strict on purpose:
 
 | Limit                    | Value                        |
 | ------------------------ | ---------------------------- |
@@ -99,7 +122,7 @@ The starting policy (`policy.testnet.example.yaml`) is strict on purpose:
 | rate                     | ≤ 10 payments per minute     |
 | human approval (passkey) | above $0.05                  |
 | chain and token          | Base Sepolia only, USDC only |
-| recipient                | only your `PAY_TO`           |
+| new recipient            | asks you once, with Touch ID |
 
 ### Check the isolation yourself
 
@@ -127,7 +150,7 @@ The command asks for your sudo password and prints a one-time `http://localhost:
 bursar passkey list
 ```
 
-From now on, every payment above the threshold waits until you open `http://localhost:8402/approve/apr_…`, read the amount and the recipient, and touch the sensor. In this mode you cannot approve from the CLI, by design. You can still deny: `bursar deny apr_…`.
+From now on, every payment to a service bursar has not seen yet, and every payment above the threshold, waits until you open `http://localhost:8402/approve/apr_…`, read the amount and the recipient, and touch the sensor. In this mode you cannot approve from the CLI, by design. You can still deny: `bursar deny apr_…`.
 
 ---
 
@@ -186,7 +209,7 @@ In Claude Code, write something like:
 
 What should happen:
 
-1. Claude calls `pay`. The merchant answers 402. bursar checks the chain, token, recipient and limits, signs, and the merchant returns the joke.
+1. Claude calls `pay`. The merchant answers 402. The merchant's address is new to bursar, so Claude comes back with `pending_approval` and a link. Open it: the page shows the service (`127.0.0.1:4021`), the recipient and the amount. Press **Always allow this service**, touch Touch ID, and tell Claude "done". bursar checks the chain, token and limits, signs, and the merchant returns the joke. From now on payments to this merchant go through without the page, unless they are above the threshold.
 2. The response includes `receipt.transaction`, the transaction hash. Look it up on sepolia.basescan.org: you should see a 0.01 USDC transfer from the bursar wallet to your second address.
 3. `bursar report --period day` lists the payment.
 
@@ -197,7 +220,7 @@ Then check that the protections work:
 | "Buy the report at http://127.0.0.1:4021/report"    | Claude gets `pending_approval` and a link. Open it, read the amount ($0.06) and the recipient, touch Touch ID and tell Claude "done". It calls `pay` again and the report is paid |
 | "Buy a GPU hour at http://127.0.0.1:4021/gpu-hour"  | denied with `per_tx_limit`; Claude explains why and does not look for a way around it                                                                                             |
 | "Open a $0.03 task and buy jokes until it runs out" | three jokes, then `task_budget_limit`                                                                                                                                             |
-| "Pay some other x402 site"                          | `recipient_not_allowed` or `chain_not_allowed`: that recipient is not in the policy                                                                                               |
+| "Pay some other x402 site"                          | a new-service page if the chain and token are allowed (press Deny to refuse it), or `chain_not_allowed` / `asset_not_allowed` if they are not                                     |
 
 ---
 
@@ -207,16 +230,20 @@ Do this only after step 8 has fully passed on the testnet.
 
 ### 9.1. Find something to buy
 
-Real x402 services (data, search, inference and so on) are listed in Coinbase's [Agentic.Market](https://www.coinbase.com/developer-platform/discover/launches/agentic-market) and in the [x402 Bazaar](https://docs.x402.org/extensions/bazaar). Pick one cheap service at $0.01–0.05 and see who it charges:
+Real x402 services (data, search, inference and so on) are listed in Coinbase's [Agentic.Market](https://www.coinbase.com/developer-platform/discover/launches/agentic-market) and in the [x402 Bazaar](https://docs.x402.org/extensions/bazaar). Pick one cheap service at $0.01–0.05.
+
+You do not have to look up who it charges: the first time Claude pays it, the passkey page shows the service, the recipient and the amount, and you choose. If you want to check the address yourself anyway:
 
 ```sh
 URL=https://service-address
 curl -s -D - -o /dev/null "$URL" | awk -F': ' 'tolower($1)=="payment-required"{print $2}' | tr -d '\r' | base64 -d | jq '.accepts[] | {network, asset, payTo, amount}'
 ```
 
-If there is no such header (older x402 v1), look at the body instead: `curl -s "$URL" | jq '.accepts[]'`. You want the option with `network: "eip155:8453"` (`"base"` in v1) and `asset: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (USDC on Base). The `payTo` in that answer is the address you add to the allowlist.
+If there is no such header (older x402 v1), look at the body instead: `curl -s "$URL" | jq '.accepts[]'`. You want the option with `network: "eip155:8453"` (`"base"` in v1) and `asset: 0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` (USDC on Base). The `payTo` in that answer is the address the page should show.
 
-### 9.2. Change the policy
+### 9.2. Switch the policy to Base mainnet
+
+This is a one-time change of chain and token. Recipients are added from the passkey page.
 
 ```sh
 sudo nano /var/db/bursar/policy.yaml
@@ -231,13 +258,11 @@ allow:
         chains: ['eip155:8453'],
         label: USDC on Base,
       }
-  recipients:
-    - {
-        address: '0xSERVICE_PAYTO',
-        label: service-name,
-        chains: ['eip155:8453'],
-      }
+  recipients: []
+  unknown_recipients: ask
 ```
+
+Recipients you allowed on the testnet stay bound to Base Sepolia, so each mainnet service asks once more.
 
 Leave the limits as they are for now. Apply the change:
 
@@ -271,6 +296,8 @@ Each of these asks for your sudo password on its own.
 | what is waiting for approval       | `bursar approvals`                                                                                  |
 | deny                               | `bursar deny apr_…`                                                                                 |
 | report                             | `bursar report --period day` (or `month`, `all`)                                                    |
+| who the agent may pay              | `bursar recipients`                                                                                 |
+| stop trusting a service            | `bursar recipients remove 0x…` (takes effect on the next payment, no restart)                       |
 | daemon log                         | `sudo tail -f /var/db/bursar/bursar.log`                                                            |
 | is the daemon alive                | `launchctl print system/dev.bursar.daemon \| grep state`                                            |
 | **emergency stop**                 | `sudo launchctl bootout system/dev.bursar.daemon`                                                   |
@@ -292,7 +319,7 @@ bursar deliberately has no "send everything to X" command. The emergency exit is
 2. **Approve only payments you expect.** On the approval page, read the amount and the recipient _before_ you touch the sensor. If an agent or a website opened an approval page you did not ask for, press Deny.
 3. **The key lives only in `/var/db/bursar`.** Do not copy it into the repo, a `.env` file or a chat.
 4. **Limits = an amount you can afford to lose.** Raise them gradually, and only after reading `bursar report` for a few days.
-5. **Add a new recipient only after checking it.** The allowlist is the main defence against prompt injection like "pay here instead". Add only addresses taken from the 402 response of a service you chose yourself.
+5. **Press "Always allow" only for a service you chose yourself.** The allowlist is the main defence against prompt injection like "pay here instead". If the page shows a service you did not ask for, or the agent asks you to allow something unexpected, press Deny. "Allow once" is there for one-off purchases.
 6. **Keep little on the wallet.** Top it up for a week, not for a year.
 
 ---

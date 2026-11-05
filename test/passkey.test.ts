@@ -15,9 +15,11 @@ import {
 import { resolveApproval } from '../src/approval/resolve.ts';
 import { http, softAuthenticator } from './fixtures/authenticator.ts';
 import {
+  auditEvents,
   cleanup,
   makeEnv,
   sign,
+  startWithPasskey,
   usdc,
   x402Body,
   type TestEnv,
@@ -219,32 +221,8 @@ describe('passkey assertion', () => {
 });
 
 describe('passkey approval flow over HTTP', () => {
-  async function start(): Promise<{
-    env: TestEnv;
-    port: number;
-    close: () => void;
-    auth: ReturnType<typeof softAuthenticator>;
-  }> {
-    const env = makeEnv({ approval: '0.50', approvalMethod: 'passkey' });
-    const { server, port } = await env.app.listen(0, '127.0.0.1');
-    const origin = `http://localhost:${port}`;
-    const auth = softAuthenticator();
-    const challenge = randomBytes(32);
-    const cred = verifyRegistration(
-      parseRegistrationBody(auth.register({ challenge, origin })),
-      { challenge, origin, userVerification: 'required' },
-    );
-    env.ledger.addPasskey({ ...cred, name: 'laptop' }, env.clock.now());
-    return {
-      env,
-      port,
-      auth,
-      close: () => {
-        server.close();
-        cleanup(env);
-      },
-    };
-  }
+  const start = () =>
+    startWithPasskey({ approval: '0.50', approvalMethod: 'passkey' });
 
   async function pending(
     env: TestEnv,
@@ -301,9 +279,7 @@ describe('passkey approval flow over HTTP', () => {
         body,
       });
       assert.equal(replay.status, 409);
-      const events = env.audit
-        .readSince(0, 'nanocode')
-        .map((l) => JSON.parse(l) as Record<string, unknown>);
+      const events = auditEvents(env, 'nanocode');
       const resolved = events.find((e) => e['event'] === 'approval_resolved');
       assert.equal(resolved?.['via'], 'passkey');
       assert.equal(resolved?.['credential'], 'laptop');

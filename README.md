@@ -12,6 +12,14 @@ Minimal local wallet for AI agents with spending limits, allowlists & passkey ap
 - Human approval with Touch ID and other passkeys
 - MCP server for Claude Code and other agents
 
+## Install on a Mac
+
+```sh
+npm ci && npm run setup
+```
+
+A few questions (network, limits, Touch ID threshold), then setup installs the daemon under its own macOS user, registers your passkey and connects Claude Code. Details and the manual path: [SETUP_GUIDE.md](SETUP_GUIDE.md).
+
 ## How it works
 
 bursar is a local daemon that holds a wallet key and signs payments on behalf of AI agents. An agent sends it a payment request (an x402 `402` response, an MPP challenge, or a raw EVM token transfer). bursar turns that into a canonical intent built from the fields that will actually be signed, checks it against a YAML policy (allowlists, per-tx / per-day / per-recipient / velocity limits, approval threshold), and only then signs. The agent never sees the key.
@@ -133,6 +141,13 @@ node dist/src/index.js passkey list --policy policy.example.yaml
 
 Pending responses then carry `approvalUrl` (`http://localhost:8402/approve/apr_...`). Open it, check the recipient and amount, and confirm with the passkey. The page must be opened on `localhost`, not `127.0.0.1`, because WebAuthn does not allow IP addresses as the relying party. The challenge the passkey signs covers the approval id, the decision and the hash of the intent, so a signature for one approval cannot approve another. The CLI can still deny, but it can no longer approve.
 
+With passkey approvals you can also skip writing merchant addresses into the policy. Set `allow.unknown_recipients: ask`, and the first payment to a recipient that is not on the list returns `pending` with `reason: "new_recipient"`. The approval page shows the service (the host of the paid resource), the recipient and the amount, and offers **Allow once**, **Always allow this service** or **Deny**. "Always allow" stores the recipient for that one chain, and later payments to it still follow every limit and the approval threshold. The passkey signs a separate challenge for "always allow", so a signature for "allow once" cannot be replayed to add a recipient. Chains and tokens still come only from the policy file. List and remove learned recipients from the CLI:
+
+```sh
+node dist/src/index.js recipients --policy policy.example.yaml
+node dist/src/index.js recipients remove 0x... --policy policy.example.yaml
+```
+
 Give each piece of work its own budget with a task. The harness that starts the agent opens it (not the model) and passes the `taskId` to the payment tool, so a prompt-injected agent cannot raise its own ceiling:
 
 ```python
@@ -196,6 +211,7 @@ Unknown keys are rejected. `${VAR}` is substituted from the environment, and an 
 | `allow.chains`                                             | CAIP-2 chain ids (`eip155:8453`, `solana:mainnet`, `eip155:4217` = Tempo mainnet; `eip155:42431` = Tempo testnet). x402 v1 names (`base`, `solana`) and Solana genesis-hash ids are mapped onto these                                                                   |
 | `allow.assets`                                             | USD-pegged stablecoin addresses or mints only, each counted as 1 token = 1 USD; `native` is rejected. A string means 6 decimals on any allowed chain; an object `{address, decimals, chains, label}` is more precise                                                    |
 | `allow.recipients`                                         | `[{address, label, max_usd_day, chains}]`. The address in `policy.example.yaml` is a placeholder: put the merchant's real `payTo` / `recipient` there, or the literal `any` to disable recipient checks. `max_usd_day` overrides `per_recipient_day` for that recipient |
+| `allow.unknown_recipients`                                 | `deny` (default): unknown recipients are refused with `recipient_not_allowed`. `ask`: they go to a passkey page with "Allow once" / "Always allow this service" / "Deny". Needs `approval_threshold.method: passkey`, because an agent with a shell could drive the CLI |
 | `require_resource_hash`                                    | deny payments that carry no `resourceHash` (default `false`)                                                                                                                                                                                                            |
 | `evm.allowed_selectors`                                    | calldata selectors allowed for `protocol: evm` (default `transfer`, `transferWithAuthorization`). A selector bursar has no decoder for is still refused                                                                                                                 |
 | `evm.simulate_before_sign`                                 | `eth_call` the transaction against `rpc[chain]` first; with no RPC configured the request is denied (default `true`)                                                                                                                                                    |

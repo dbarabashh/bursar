@@ -19,6 +19,7 @@
     "test": "node --test --test-concurrency=1 test/*.test.ts",
     "dev": "node src/index.ts",
     "start": "node dist/src/index.js",
+    "setup": "node src/setup.ts",
     "sandbox": "node sandbox/run.ts",
     "sandbox:manual": "node sandbox/manual.ts",
     "mcp": "node src/mcp/server.ts",

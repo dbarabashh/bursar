@@ -18,7 +18,12 @@ import {
 } from '../intent.ts';
 import type { AuditEvent, AuditLog } from '../audit.ts';
 import type { Ledger, StoredResponse } from '../ledger/store.ts';
-import { findAsset, isRouteAllowed } from '../policy/allowlist.ts';
+import {
+  findAsset,
+  isRouteAllowed,
+  learnedRule,
+  listedRecipients,
+} from '../policy/allowlist.ts';
 import { evaluate } from '../policy/engine.ts';
 import {
   monthEnd,
@@ -397,7 +402,13 @@ export function createApp(deps: AppDeps) {
       velocityStart: velocityStart(policy, t),
       taskId: req.taskId,
     });
-    const decision = evaluate(policy, intent, snap, { approved: pre.approved });
+    const decision = evaluate(policy, intent, snap, {
+      approved: pre.approved,
+      learned:
+        policy.allow.recipients === 'any'
+          ? []
+          : ledger.learnedRecipientsFor(recipient).map(learnedRule),
+    });
 
     if (decision.kind === 'deny') {
       events.push({
@@ -427,10 +438,21 @@ export function createApp(deps: AppDeps) {
         status: 'pending',
         ts: t,
         expiresAt,
+        context: {
+          reason: decision.reason,
+          resourceUrl: intent.resourceUrl ?? req.resource?.url ?? null,
+        },
       });
-      events.push({ ...base, event: 'pending', approvalId: id, usd });
+      events.push({
+        ...base,
+        event: 'pending',
+        approvalId: id,
+        usd,
+        reason: decision.reason,
+      });
       const pendingBody: Record<string, unknown> = {
         status: 'pending',
+        reason: decision.reason,
         approvalId: id,
         expiresAt: new Date(expiresAt).toISOString(),
       };
@@ -655,12 +677,13 @@ export function createApp(deps: AppDeps) {
       limitUsd: limit === null ? null : formatUsd(limit),
       remainingUsd: limit === null ? null : remaining(limit, spent),
     });
+    const listed = listedRecipients(policy, ledger.listLearnedRecipients());
     const recipients =
-      policy.allow.recipients === 'any'
+      listed === 'any'
         ? [...byRecipient].map(([address, spent]) =>
             row(address, null, spent, recipientDayLimit(policy, null)),
           )
-        : policy.allow.recipients.map((r) =>
+        : listed.map((r) =>
             row(
               r.address,
               r.label,
