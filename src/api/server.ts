@@ -1,6 +1,7 @@
 import {
   createServer,
   type IncomingMessage,
+  type RequestListener,
   type Server,
   type ServerResponse,
 } from 'node:http';
@@ -45,6 +46,7 @@ import type { Signer, SignOutput } from '../signer/index.ts';
 import {
   canonicalJson,
   formatUsd,
+  holdLoopbackTwin,
   isRecord,
   parseUsd,
   sha256Hex,
@@ -858,12 +860,16 @@ export function createApp(deps: AppDeps) {
         ),
       );
     }
-    const server = createServer((req, res) => void handle(req, res));
+    const onRequest: RequestListener = (req, res) => void handle(req, res);
+    const server = createServer(onRequest);
     return new Promise((resolve, reject) => {
       server.once('error', reject);
       server.listen(port, host, () => {
         boundPort = (server.address() as AddressInfo).port;
-        resolve({ server, port: boundPort });
+        holdLoopbackTwin(server, onRequest).then(
+          () => resolve({ server, port: boundPort }),
+          reject,
+        );
       });
     });
   }

@@ -1,5 +1,42 @@
+import { createServer, type RequestListener, type Server } from 'node:http';
+import type { AddressInfo } from 'node:net';
 import { sha256 } from '@noble/hashes/sha2.js';
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js';
+
+// Browsers send http://localhost:<port> to ::1 or 127.0.0.1, whichever answers.
+// Listening on one family leaves the same port on the other free for any local
+// process to bind and receive the approval / registration pages under the
+// origin WebAuthn trusts. Hold the twin loopback address too.
+const LOOPBACK_TWIN: Record<string, string> = {
+  '127.0.0.1': '::1',
+  '::1': '127.0.0.1',
+};
+
+export function holdLoopbackTwin(
+  server: Server,
+  listener: RequestListener,
+): Promise<void> {
+  const addr = server.address() as AddressInfo;
+  const twinHost = LOOPBACK_TWIN[addr.address];
+  if (twinHost === undefined) return Promise.resolve();
+  const twin = createServer(listener);
+  return new Promise((resolve, reject) => {
+    twin.once('error', (e: NodeJS.ErrnoException) => {
+      if (e.code === 'EADDRNOTAVAIL' || e.code === 'EAFNOSUPPORT')
+        return resolve();
+      server.close();
+      reject(
+        new Error(
+          `cannot hold ${twinHost} port ${addr.port} (${e.code ?? e.message}); another process may be intercepting http://localhost:${addr.port}`,
+        ),
+      );
+    });
+    twin.listen(addr.port, twinHost, () => {
+      server.once('close', () => twin.close());
+      resolve();
+    });
+  });
+}
 
 export const MICRO = 1_000_000n;
 

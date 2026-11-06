@@ -15,7 +15,7 @@ npm run setup
 Setup asks three things: testnet or real money, how much the agent may spend (a careful or normal preset, or your own numbers), and above which amount to ask for your passkey. Then it:
 
 1. installs the daemon under its own system account (one sudo password on macOS and Linux, an Administrator terminal on Windows);
-2. opens a page in the browser to register a passkey (Touch ID, Windows Hello, a security key, or a phone via QR code);
+2. opens a page in the browser to register a passkey (Touch ID, Windows Hello, a security key, or a phone via QR code); after you confirm, type the code the page shows into the setup terminal;
 3. connects Claude Code (`claude mcp add`), so you never see or copy the agent token;
 4. shows the wallet address, and waits until the USDC arrives if you like.
 
@@ -160,7 +160,7 @@ The first three commands must fail. The agent sees the system the same way you d
 bursar passkey add --name "MacBook Touch ID"
 ```
 
-The command asks for your sudo password and prints a one-time `http://localhost:…` link. Open it in Chrome and confirm with Touch ID. Check it worked:
+The command asks for your sudo password and prints a one-time `http://localhost:…` link. Open it in Chrome, confirm with Touch ID, then type the code the page shows (like `K7QM-2XFD`) into the terminal. The code is what proves the passkey is yours: an agent that saw the link can create its own passkey, but it cannot type into your terminal. If the page says the link was already opened, someone else got there first: press Ctrl+C, run `bursar passkey list` and remove anything you do not recognise. Check it worked:
 
 ```sh
 bursar passkey list

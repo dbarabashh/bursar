@@ -475,7 +475,7 @@ function registerPasskey(r: Runner, name: string): Promise<boolean> {
         opened = true;
         say(`  Opening ${m[1]}`);
         say(
-          `  Press "Create passkey" in the browser and confirm with ${LAYOUT.auth}.`,
+          `  Press "Create passkey" in the browser, confirm with ${LAYOUT.auth}, then type the code it shows here.`,
         );
         openUrl(m[1]);
       }

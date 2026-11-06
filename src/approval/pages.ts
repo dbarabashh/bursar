@@ -192,7 +192,7 @@ export function registrationPage(cfg: {
 }): Page {
   const content = `
 <h1>Register a passkey for bursar</h1>
-<p class="muted">This passkey will be required to approve payments above the approval threshold. The page works once and closes after registration.</p>
+<p class="muted">This passkey will be required to approve payments above the approval threshold. After you create it, type the code this page shows into the terminal that opened it.</p>
 <dl>${`<dt>Name</dt><dd>${escapeHtml(cfg.name)}</dd><dt>Relying party</dt><dd>${escapeHtml(cfg.rpId)}</dd>`}</dl>
 <div class="actions"><button class="primary" id="register" type="button">Create passkey</button></div>`;
   const script = `
@@ -217,7 +217,7 @@ document.getElementById('register').addEventListener('click', async () => {
       body: JSON.stringify({ credentialId: toB64(cred.rawId), clientDataJSON: toB64(r.clientDataJSON), authenticatorData: toB64(r.getAuthenticatorData()), publicKey: toB64(r.getPublicKey()), algorithm: r.getPublicKeyAlgorithm() }),
     });
     const out = await res.json();
-    if (res.ok) { say('Passkey registered. You can close this page.', 'ok'); return; }
+    if (res.ok) { say('Type this code in the terminal to finish: ' + out.code, 'ok'); return; }
     say('Rejected: ' + out.error, 'bad');
   } catch (err) {
     say('Cancelled: ' + err.message, 'bad');

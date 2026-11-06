@@ -1,4 +1,5 @@
 #!/usr/bin/env node
+import { createInterface } from 'node:readline';
 import { parseArgs } from 'node:util';
 import { createApp } from './api/server.ts';
 import { resolveApproval } from './approval/resolve.ts';
@@ -246,9 +247,26 @@ async function main(): Promise<void> {
             policy.limits.approval?.userVerification ?? 'required',
         });
         process.stdout.write(
-          `Open this one-time link in a browser on this machine to register a passkey:\n  ${session.url}\n`,
+          `Open this one-time link in a browser on this machine to register a passkey:\n  ${session.url}\nThen type the code the page shows here.\n`,
         );
-        const cred = await session.done;
+        // The code comes from the operator's terminal, which an agent that
+        // only learned the URL cannot type into.
+        const rl = createInterface({
+          input: process.stdin,
+          output: process.stderr,
+        });
+        const ask = (): void =>
+          rl.question('Code shown in the browser: ', (code) => {
+            if (session.confirm(code)) return;
+            process.stderr.write('No registration with that code.\n');
+            ask();
+          });
+        rl.on('close', () => session.close());
+        ask();
+        const cred = await session.done.finally(() => {
+          rl.removeAllListeners('close');
+          rl.close();
+        });
         process.stdout.write(
           `registered passkey ${cred.credentialId} (${cred.name})\n`,
         );

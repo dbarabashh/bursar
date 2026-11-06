@@ -546,6 +546,11 @@ describe('passkey registration server', () => {
         body: auth.register({ challenge, origin: `http://localhost:${port}` }),
       });
       assert.equal(ok.status, 200, ok.text);
+      // Nothing is stored until the operator types the page's code in the terminal.
+      assert.equal(env.ledger.getPasskey(auth.credentialId), null);
+      assert.equal(session.confirm('WRONG-CODE'), false);
+      const { code } = JSON.parse(ok.text) as { code: string };
+      assert.equal(session.confirm(code.toLowerCase()), true);
       const cred = await session.done;
       assert.equal(cred.name, 'laptop');
       assert.equal(env.ledger.getPasskey(auth.credentialId)?.name, 'laptop');
