@@ -1,12 +1,20 @@
 #!/usr/bin/env node
 // Interactive installer: asks a few questions, writes the policy, installs the
-// daemon under its own macOS user, registers a passkey and connects Claude Code.
+// daemon under its own system account (macOS, Linux, Windows), registers a
+// passkey and connects Claude Code.
 // Run it from the repo as your normal user: npm run setup
+// (on Windows: from a terminal opened with "Run as administrator").
 import { spawn, spawnSync, type SpawnOptions } from 'node:child_process';
 import { randomBytes } from 'node:crypto';
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import {
+  existsSync,
+  mkdtempSync,
+  readFileSync,
+  rmSync,
+  writeFileSync,
+} from 'node:fs';
 import { hostname, tmpdir } from 'node:os';
-import { dirname, join, resolve } from 'node:path';
+import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { emitKeypressEvents } from 'node:readline';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
@@ -15,11 +23,82 @@ import { DEFAULT_PORT, parsePolicy } from './config.ts';
 import { rpcCall } from './protocols/common.ts';
 import { formatUsd, parseUsd } from './util.ts';
 
-// Paths the installer (scripts/install-macos.sh) uses.
-const PREFIX = '/opt/bursar';
-const STATE = '/var/db/bursar';
-const PLIST = '/Library/LaunchDaemons/dev.bursar.daemon.plist';
-const BURSAR_BIN = '/usr/local/bin/bursar';
+export type Os = 'darwin' | 'linux' | 'win32';
+
+// Where each installer (scripts/install-<os>.*) puts the code and the state.
+export type Layout = {
+  os: Os;
+  prefix: string; // root-owned code: bin/node, app/src
+  state: string; // key, policy, ledger; only the daemon account (and admins) can read it
+  node: string;
+  cli: string;
+  mcp: string;
+  policy: string;
+  marker: string; // exists once bursar is installed
+  installer: string; // relative to the repo
+  edit: string;
+  restart: string;
+  auth: string; // what the human touches to approve
+};
+
+export function layoutFor(
+  os: Os,
+  env: NodeJS.ProcessEnv = process.env,
+): Layout {
+  if (os === 'win32') {
+    const prefix = win32.join(
+      env['ProgramFiles'] ?? 'C:\\Program Files',
+      'bursar',
+    );
+    const state = win32.join(env['ProgramData'] ?? 'C:\\ProgramData', 'bursar');
+    return {
+      os,
+      prefix,
+      state,
+      node: win32.join(prefix, 'bin', 'node.exe'),
+      cli: win32.join(prefix, 'app', 'src', 'index.ts'),
+      mcp: win32.join(prefix, 'app', 'src', 'mcp', 'server.ts'),
+      policy: win32.join(state, 'policy.yaml'),
+      marker: win32.join(prefix, 'bin', 'bursar-service.exe'),
+      installer: win32.join('scripts', 'install-windows.ps1'),
+      edit: `notepad ${win32.join(state, 'policy.yaml')} (from an Administrator terminal)`,
+      restart: 'Restart-Service bursar (as Administrator)',
+      auth: 'Windows Hello',
+    };
+  }
+  const prefix = '/opt/bursar';
+  const state = os === 'darwin' ? '/var/db/bursar' : '/var/lib/bursar';
+  return {
+    os,
+    prefix,
+    state,
+    node: `${prefix}/bin/node`,
+    cli: '/usr/local/bin/bursar',
+    mcp: `${prefix}/app/src/mcp/server.ts`,
+    policy: `${state}/policy.yaml`,
+    marker:
+      os === 'darwin'
+        ? '/Library/LaunchDaemons/dev.bursar.daemon.plist'
+        : '/etc/systemd/system/bursar.service',
+    installer: posix.join(
+      'scripts',
+      `install-${os === 'darwin' ? 'macos' : 'linux'}.sh`,
+    ),
+    edit: `sudo nano ${state}/policy.yaml`,
+    restart:
+      os === 'darwin'
+        ? 'sudo launchctl kickstart -k system/dev.bursar.daemon'
+        : 'sudo systemctl restart bursar',
+    auth: os === 'darwin' ? 'Touch ID' : 'a passkey',
+  };
+}
+
+function currentOs(): Os | null {
+  const p = process.platform;
+  return p === 'darwin' || p === 'linux' || p === 'win32' ? p : null;
+}
+
+const LAYOUT = layoutFor(currentOs() ?? 'linux');
 const BURSAR_URL = `http://127.0.0.1:${DEFAULT_PORT}`;
 // The installer replaces this with a fresh token when it writes a default policy.
 const TOKEN_PLACEHOLDER = '__AGENT_TOKEN_SET_BY_INSTALLER__';
@@ -100,9 +179,9 @@ export function limitWarnings(l: Limits): string[] {
     out.push('a limit of $0 blocks every payment');
   if (tx > day) out.push('one payment is capped by the daily limit anyway');
   if (day > month) out.push('the daily limit is capped by the monthly one');
-  if (parseUsd(l.threshold, 'touch id') >= tx)
+  if (parseUsd(l.threshold, 'approval') >= tx)
     out.push(
-      'Touch ID is above the per-payment limit, so it is only asked for new services',
+      `the ${LAYOUT.auth} threshold is above the per-payment limit, so it is only asked for new services`,
     );
   return out;
 }
@@ -110,13 +189,15 @@ export function limitWarnings(l: Limits): string[] {
 export function buildPolicyYaml(
   a: Pick<Answers, 'network' | 'limits'>,
   token: string,
-  stateDir = STATE,
+  layout: Layout = LAYOUT,
 ): string {
   const n = NETWORKS[a.network];
   const l = a.limits;
+  // Forward slashes work on Windows too and need no quoting in YAML.
+  const stateDir = layout.state.replaceAll('\\', '/');
   return `# Written by bursar setup on ${new Date().toISOString().slice(0, 10)}.
-# Change it with: sudo nano ${stateDir}/policy.yaml
-# then: sudo launchctl kickstart -k system/dev.bursar.daemon
+# Change it with: ${layout.edit}
+# then: ${layout.restart}
 # Or run npm run setup again.
 version: 1
 
@@ -271,6 +352,11 @@ async function select<T>(question: string, choices: Choice<T>[]): Promise<T> {
 
 // ---------- commands ----------
 
+function isElevated(): boolean {
+  // `net session` only succeeds with an elevated (Administrator) token.
+  return spawnSync('net.exe', ['session'], { stdio: 'ignore' }).status === 0;
+}
+
 type Runner = {
   dryRun: boolean;
   secrets: string[];
@@ -306,26 +392,77 @@ function capture(r: Runner, cmd: string, args: string[], fake = ''): string {
 }
 
 function has(cmd: string): boolean {
-  return spawnSync('/usr/bin/which', [cmd], { stdio: 'ignore' }).status === 0;
+  const r =
+    LAYOUT.os === 'win32'
+      ? spawnSync('where.exe', [cmd], { stdio: 'ignore' })
+      : spawnSync('/bin/sh', ['-c', 'command -v "$1"', 'sh', cmd], {
+          stdio: 'ignore',
+        });
+  return r.status === 0;
+}
+
+// Quote one argument for cmd.exe. Only paths, flags and hex tokens go through here.
+export function cmdQuote(a: string): string {
+  return /^[\w@%+=:,./\\-]+$/.test(a) ? a : `"${a.replaceAll('"', '""')}"`;
+}
+
+// `claude` is a .cmd shim on Windows when installed with npm, and Node only
+// runs those through a shell.
+function claudeCommand(args: string[]): [string, string[], SpawnOptions] {
+  if (LAYOUT.os !== 'win32') return ['claude', args, {}];
+  return [
+    'cmd.exe',
+    ['/d', '/s', '/c', `"claude ${args.map(cmdQuote).join(' ')}"`],
+    { windowsVerbatimArguments: true },
+  ];
+}
+
+// The bursar CLI. On Windows it runs directly (setup is elevated there);
+// elsewhere the wrapper switches to the daemon account with sudo.
+function bursarCommand(args: string[]): [string, string[]] {
+  return LAYOUT.os === 'win32'
+    ? [LAYOUT.node, [LAYOUT.cli, ...args, '--policy', LAYOUT.policy]]
+    : [LAYOUT.cli, args];
+}
+
+function isWsl(): boolean {
+  try {
+    return /microsoft/i.test(readFileSync('/proc/version', 'utf8'));
+  } catch {
+    return false;
+  }
 }
 
 function computerName(): string {
-  const r = spawnSync('/usr/sbin/scutil', ['--get', 'ComputerName'], {
-    encoding: 'utf8',
-  });
-  const name = r.status === 0 ? r.stdout.trim() : '';
-  return name !== '' ? name : hostname().replace(/\.local$/, '') || 'Mac';
+  if (LAYOUT.os === 'darwin') {
+    const r = spawnSync('/usr/sbin/scutil', ['--get', 'ComputerName'], {
+      encoding: 'utf8',
+    });
+    const name = r.status === 0 ? r.stdout.trim() : '';
+    if (name !== '') return name;
+  }
+  return hostname().replace(/\.local$/, '') || 'computer';
 }
 
 function openUrl(url: string): void {
-  spawnSync('/usr/bin/open', [url], { stdio: 'ignore' });
+  const tryOpen = (cmd: string, args: string[]) =>
+    spawnSync(cmd, args, { stdio: 'ignore' }).status === 0;
+  if (LAYOUT.os === 'darwin') tryOpen('/usr/bin/open', [url]);
+  else if (LAYOUT.os === 'win32')
+    tryOpen('rundll32.exe', ['url.dll,FileProtocolHandler', url]);
+  else if (
+    !tryOpen('xdg-open', [url]) &&
+    !(isWsl() && tryOpen('wslview', [url])) &&
+    !(isWsl() && tryOpen('cmd.exe', ['/c', 'start', '""', url]))
+  )
+    say(c.yellow('  Could not open a browser; open the link above yourself.'));
 }
 
 function registerPasskey(r: Runner, name: string): Promise<boolean> {
-  const args = ['passkey', 'add', '--name', name];
-  if (dry(r, BURSAR_BIN, args)) return Promise.resolve(true);
+  const [cmd, args] = bursarCommand(['passkey', 'add', '--name', name]);
+  if (dry(r, cmd, args)) return Promise.resolve(true);
   return new Promise((done) => {
-    const child = spawn(BURSAR_BIN, args, {
+    const child = spawn(cmd, args, {
       stdio: ['inherit', 'pipe', 'inherit'],
     });
     let opened = false;
@@ -337,7 +474,9 @@ function registerPasskey(r: Runner, name: string): Promise<boolean> {
       if (m?.[1] !== undefined && !opened) {
         opened = true;
         say(`  Opening ${m[1]}`);
-        say('  Press "Create passkey" in the browser and touch Touch ID.');
+        say(
+          `  Press "Create passkey" in the browser and confirm with ${LAYOUT.auth}.`,
+        );
         openUrl(m[1]);
       }
       if (/registered passkey/.test(buf)) say(c.green('  ✓ passkey saved'));
@@ -430,10 +569,10 @@ async function collect(flags: Flags): Promise<Answers> {
     limits.perMonth = await usd('Max per month, $', limits.perMonth);
   }
   if (flags.threshold !== undefined)
-    limits.threshold = checkUsd(flags.threshold, 'touch id');
+    limits.threshold = checkUsd(flags.threshold, 'threshold');
   else if (!flags.yes)
     limits.threshold = await usd(
-      'Ask Touch ID for payments above, $',
+      `Ask ${LAYOUT.auth} for payments above, $`,
       limits.threshold,
     );
   // stderr, so notes never end up in a policy printed with --print-policy
@@ -454,6 +593,7 @@ type Flags = {
   limits?: 'careful' | 'normal';
   threshold?: string;
   skipClaude: boolean;
+  skipPasskey: boolean;
   yes: boolean;
   dryRun: boolean;
   printPolicy: boolean;
@@ -464,9 +604,10 @@ const USAGE = `npm run setup [-- options]
 
   --network testnet|mainnet   skip the network question
   --limits careful|normal     skip the limits question
-  --threshold <usd>           Touch ID above this amount
+  --threshold <usd>           ask your passkey above this amount
   --keep-policy               only update the installed code
   --no-claude                 do not touch Claude Code
+  --no-passkey                skip passkey registration (servers without a browser; run bursar passkey add later)
   --yes                       take the defaults for the rest
   --print-policy              print the policy that would be written and exit
   --dry-run                   show the commands instead of running them
@@ -480,6 +621,7 @@ function parseFlags(argv: string[]): Flags {
       limits: { type: 'string' },
       threshold: { type: 'string' },
       'no-claude': { type: 'boolean' },
+      'no-passkey': { type: 'boolean' },
       'keep-policy': { type: 'boolean' },
       yes: { type: 'boolean', short: 'y' },
       'dry-run': { type: 'boolean' },
@@ -499,6 +641,7 @@ function parseFlags(argv: string[]): Flags {
     throw new Error('--limits must be careful or normal');
   const f: Flags = {
     skipClaude: values['no-claude'] ?? false,
+    skipPasskey: values['no-passkey'] ?? false,
     yes: values.yes ?? false,
     dryRun: values['dry-run'] ?? false,
     printPolicy: values['print-policy'] ?? false,
@@ -523,11 +666,26 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     process.stdout.write(buildPolicyYaml(a, TOKEN_PLACEHOLDER));
     return;
   }
-  if (process.platform !== 'darwin' && !flags.dryRun)
-    throw new Error('setup supports macOS only for now (see SETUP_GUIDE.md)');
-  if (process.getuid?.() === 0)
+  const os = currentOs();
+  if (os === null)
+    throw new Error(
+      `setup supports macOS, Linux and Windows, not ${process.platform}`,
+    );
+  if (os === 'win32') {
+    if (!flags.dryRun && !isElevated())
+      throw new Error(
+        'on Windows run setup from a terminal opened with "Run as administrator"',
+      );
+  } else if (process.getuid?.() === 0) {
     throw new Error(
       'run setup as your normal user, not with sudo; it asks for sudo itself',
+    );
+  }
+  if (os === 'linux' && !flags.dryRun && !existsSync('/run/systemd/system'))
+    throw new Error(
+      isWsl()
+        ? 'systemd is not running in this WSL distro; add "[boot] systemd=true" to /etc/wsl.conf, run wsl --shutdown, then try again'
+        : 'the Linux installer needs systemd (see SETUP_GUIDE.md for running the daemon another way)',
     );
   if (!existsSync(join(repo, 'node_modules', '@noble', 'curves')))
     throw new Error(`run npm ci in ${repo} first`);
@@ -536,13 +694,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   say(c.bold('\nbursar setup'));
   say(
     c.dim(
-      'Your agent will be able to ask for payments. The key stays with a hidden system user.',
+      'Your agent will be able to ask for payments. The key stays with a separate system account.',
     ),
   );
   if (flags.dryRun)
     say(c.yellow('dry run: nothing is installed, commands are only shown'));
 
-  const installed = existsSync(PLIST);
+  const installed = existsSync(LAYOUT.marker);
   let replacePolicy = !flags.keepPolicy;
   if (installed && !flags.keepPolicy && !flags.yes) {
     replacePolicy = await select<boolean>('bursar is already installed.', [
@@ -563,20 +721,24 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   r.secrets.push(token);
   const yaml = answers && buildPolicyYaml(answers, token);
   if (answers !== null && yaml !== null) {
-    parsePolicy(yaml, { baseDir: STATE, env: {} });
+    parsePolicy(yaml, { baseDir: LAYOUT.state, env: {} });
     const l = answers.limits;
     say(`\n  ${c.bold('Summary')}`);
     say(`    network   ${NETWORKS[answers.network].label}`);
     say(
       `    limits    $${l.perTx} per payment · $${l.perDay}/day · $${l.perMonth}/month`,
     );
-    say(`    Touch ID  above $${l.threshold}, and for every new service`);
+    say(
+      `    approval  ${LAYOUT.auth} above $${l.threshold}, and for every new service`,
+    );
     say(`    Claude    ${answers.connectClaude ? 'connect' : 'skip'}`);
   }
   if (
     !flags.yes &&
     !(await confirm(
-      'Install now? You will be asked for your Mac password.',
+      LAYOUT.os === 'win32'
+        ? 'Install now?'
+        : 'Install now? You will be asked for your password (sudo).',
       true,
     ))
   ) {
@@ -588,17 +750,29 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   step(1, total, 'Installing the daemon');
   const tmp = mkdtempSync(join(tmpdir(), 'bursar-setup-'));
   try {
-    const env = [`NODE=${process.execPath}`];
-    if (yaml !== null) {
-      const file = join(tmp, 'policy.yaml');
-      writeFileSync(file, yaml, { mode: 0o600 });
-      env.push(`POLICY_FILE=${file}`, 'REPLACE_POLICY=1');
-    }
-    const code = run(r, '/usr/bin/sudo', [
-      '/usr/bin/env',
-      ...env,
-      join(repo, 'scripts', 'install-macos.sh'),
-    ]);
+    const file = join(tmp, 'policy.yaml');
+    if (yaml !== null) writeFileSync(file, yaml, { mode: 0o600 });
+    const script = join(repo, LAYOUT.installer);
+    const code =
+      LAYOUT.os === 'win32'
+        ? run(r, 'powershell.exe', [
+            '-NoProfile',
+            '-ExecutionPolicy',
+            'Bypass',
+            '-File',
+            script,
+            '-Node',
+            process.execPath,
+            ...(yaml !== null ? ['-PolicyFile', file, '-ReplacePolicy'] : []),
+          ])
+        : run(r, '/usr/bin/sudo', [
+            '/usr/bin/env',
+            `NODE=${process.execPath}`,
+            ...(yaml !== null
+              ? [`POLICY_FILE=${file}`, 'REPLACE_POLICY=1']
+              : []),
+            script,
+          ]);
     if (code !== 0)
       throw new Error('the installer failed; nothing was connected');
   } finally {
@@ -606,12 +780,22 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   }
 
   // 2. passkey
-  step(2, total, 'Touch ID');
-  const passkeys = capture(r, BURSAR_BIN, ['passkey', 'list']);
+  step(
+    2,
+    total,
+    LAYOUT.os === 'linux' ? 'Passkey' : `Passkey (${LAYOUT.auth})`,
+  );
+  const passkeys = capture(r, ...bursarCommand(['passkey', 'list']));
   if (passkeys.trim() !== '') {
     say(c.green('  ✓ a passkey is already registered'));
+  } else if (flags.skipPasskey) {
+    say(
+      c.yellow(
+        '  Skipped. Payments above the threshold and new services wait for approval until you run: bursar passkey add',
+      ),
+    );
   } else {
-    const name = `${computerName()} Touch ID`;
+    const name = `${computerName()} ${LAYOUT.os === 'linux' ? 'passkey' : LAYOUT.auth}`;
     if (!(await registerPasskey(r, name)))
       say(c.yellow('  Passkey not saved. Run later: bursar passkey add'));
   }
@@ -620,10 +804,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   let n = 3;
   if (answers?.connectClaude) {
     step(n++, total, 'Connecting Claude Code');
-    run(r, 'claude', ['mcp', 'remove', 'bursar', '--scope', 'user'], {
-      stdio: 'ignore',
-    });
-    const code = run(r, 'claude', [
+    const [rmCmd, rmArgs, rmOpts] = claudeCommand([
+      'mcp',
+      'remove',
+      'bursar',
+      '--scope',
+      'user',
+    ]);
+    run(r, rmCmd, rmArgs, { ...rmOpts, stdio: 'ignore' });
+    const [addCmd, addArgs, addOpts] = claudeCommand([
       'mcp',
       'add',
       'bursar',
@@ -634,9 +823,10 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       '-e',
       `BURSAR_TOKEN=${token}`,
       '--',
-      `${PREFIX}/bin/node`,
-      `${PREFIX}/app/src/mcp/server.ts`,
+      LAYOUT.node,
+      LAYOUT.mcp,
     ]);
+    const code = run(r, addCmd, addArgs, addOpts);
     say(
       code === 0
         ? c.green(
@@ -662,7 +852,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
   const network = answers?.network ?? null;
   step(n++, total, 'Fund the wallet');
   const address = parseEvmAddress(
-    capture(r, BURSAR_BIN, ['address'], `evm:    0x${'0'.repeat(40)}\n`),
+    capture(r, ...bursarCommand(['address']), `evm:    0x${'0'.repeat(40)}\n`),
   );
   if (address === null)
     throw new Error('could not read the wallet address (bursar address)');
@@ -706,11 +896,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       ),
     );
   say(
-    '\n  The first payment to each service opens a page: press "Always allow" and touch Touch ID.',
+    `\n  The first payment to each service opens a page: press "Always allow" and confirm with ${LAYOUT.auth}.`,
   );
   say(
     c.dim('  Everyday: bursar report · bursar recipients · bursar approvals'),
   );
+  if (LAYOUT.os === 'win32')
+    say(c.dim('  (run bursar from an Administrator terminal)'));
 }
 
 if (import.meta.main) {

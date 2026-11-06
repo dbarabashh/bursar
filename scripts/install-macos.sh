@@ -1,5 +1,4 @@
 #!/bin/sh
-# TODO: not ready yet: a Linux installer (systemd unit and a system user); this script is macOS only.
 set -eu
 
 LABEL=dev.bursar.daemon

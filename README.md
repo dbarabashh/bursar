@@ -12,13 +12,13 @@ Minimal local wallet for AI agents with spending limits, allowlists & passkey ap
 - Human approval with Touch ID and other passkeys
 - MCP server for Claude Code and other agents
 
-## Install on a Mac
+## Install (macOS, Linux, Windows)
 
 ```sh
 npm ci && npm run setup
 ```
 
-A few questions (network, limits, Touch ID threshold), then setup installs the daemon under its own macOS user, registers your passkey and connects Claude Code. Details and the manual path: [SETUP_GUIDE.md](SETUP_GUIDE.md).
+A few questions (network, limits, approval threshold), then setup installs the daemon under its own system account, registers your passkey (Touch ID, Windows Hello, a security key or a phone) and connects Claude Code. On Linux it needs systemd; on Windows run it from a terminal opened with "Run as administrator". Details and the manual path: [SETUP_GUIDE.md](SETUP_GUIDE.md).
 
 ## How it works
 
@@ -185,6 +185,8 @@ bursar counts a payment as spent when it signs it, not when it settles. A signed
 [SETUP_GUIDE.md](SETUP_GUIDE.md) walks through a safe install and a first purchase by Claude Code, on Base Sepolia first and then on Base mainnet:
 
 - `scripts/install-macos.sh` installs bursar under a hidden `_bursar` user with a launchd daemon. The key, ledger and policy live in `/var/db/bursar` and the code in a root-owned `/opt/bursar`, so an agent running as you can neither read the key nor change the policy or the code. `scripts/uninstall-macos.sh` undoes it.
+- `scripts/install-linux.sh` does the same with a `bursar` system user and a hardened systemd unit (`ProtectSystem=strict`, `NoNewPrivileges`, no capabilities). State lives in `/var/lib/bursar`, code in `/opt/bursar`. `scripts/uninstall-linux.sh` undoes it.
+- `scripts/install-windows.ps1` runs the daemon as a Windows service under the virtual account `NT SERVICE\bursar` (no password, no logon). The key and policy in `%ProgramData%\bursar` are ACL-locked to that account (read-only), SYSTEM and Administrators; the code is in `%ProgramFiles%\bursar`. A small service host is compiled on the spot with the .NET Framework, so no third-party binary is downloaded. `scripts/uninstall-windows.ps1` undoes it.
 - `src/mcp/server.ts` is an MCP server (`pay`, `budget`, `open_task`) for Claude Code and other MCP clients. It holds only the agent token: `claude mcp add bursar -e BURSAR_TOKEN=… -- node src/mcp/server.ts`.
 - `examples/testnet-merchant` is a paid API built on Coinbase's `@x402/express` against the public x402.org facilitator on Base Sepolia, with its own dependencies. `npm run offline` there runs it against a local facilitator that checks the EIP-3009 signature without touching the chain.
 
@@ -293,9 +295,10 @@ There is deliberately no endpoint for signing arbitrary bytes, messages or typed
 - Passkey attestation. Registration uses `attestation: "none"` and trusts whatever authenticator the operator uses on the one-time page, and only ES256 (P-256) credentials are accepted. The COSE key in the authenticator data is matched against `getPublicKey()` without a CBOR parser. Verification follows [WebAuthn L3 §7](https://www.w3.org/TR/webauthn-3/#sctn-verifying-assertion), and has been run end to end in headless Chrome with a CDP virtual authenticator (register, approve, deny). It has not yet been tried with hardware authenticators (Touch ID, Windows Hello, security keys) or with Safari and Firefox.
 - MPP `splits` (one charge paid to several recipients) and push mode (the client broadcasts the transaction). Both are rejected with `mpp_splits_not_supported` and `mpp_mode_not_supported`.
 - x402 schemes other than `exact`, rejected with `scheme_not_supported`.
-- A Linux installer. `scripts/install-macos.sh` is macOS only (launchd, `dscl`); on Linux the same layout needs a systemd unit and a system user.
+- Linux without systemd (OpenRC, runit, WSL with systemd off). The installer refuses; the daemon itself runs anywhere Node does, but then you have to give it its own user yourself.
+- On Windows the protection rests on UAC: the key is readable by elevated Administrators, so an agent that can get an elevated shell (UAC off, or you click "Yes" on its prompt) can read it. Run agents as a standard user if you can. The Windows installer is exercised in CI on `windows-latest`, not yet on a home machine with Windows Hello.
 
-Each of these has a one-line `TODO: not ready yet` at the place in the code where it would go.
+The code-level gaps have a one-line `TODO: not ready yet` at the place in the code where they would go.
 
 ## License
 

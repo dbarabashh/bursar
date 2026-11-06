@@ -62,7 +62,9 @@ export function loadKeys(src: KeySource): KeyMaterial {
   }
   if (!st.isFile())
     throw new KeystoreError(`keyfile ${src.keyfile} is not a regular file`);
-  if ((st.mode & 0o077) !== 0)
+  // Windows has no POSIX modes (Node reports 0o666 for every writable file);
+  // there the installer locks the key down with an ACL instead.
+  if (process.platform !== 'win32' && (st.mode & 0o077) !== 0)
     throw new KeystoreError(
       `keyfile ${src.keyfile} must be chmod 600 (is ${(st.mode & 0o777).toString(8)})`,
     );

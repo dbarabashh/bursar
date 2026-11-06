@@ -12,16 +12,31 @@ npm ci && npm test
 npm run setup
 ```
 
-Setup asks three things: testnet or real money, how much the agent may spend (a careful or normal preset, or your own numbers), and above which amount to ask for Touch ID. Then it:
+Setup asks three things: testnet or real money, how much the agent may spend (a careful or normal preset, or your own numbers), and above which amount to ask for your passkey. Then it:
 
-1. installs the daemon under a hidden user `_bursar` (one sudo password);
-2. opens a page in the browser to register your Touch ID;
+1. installs the daemon under its own system account (one sudo password on macOS and Linux, an Administrator terminal on Windows);
+2. opens a page in the browser to register a passkey (Touch ID, Windows Hello, a security key, or a phone via QR code);
 3. connects Claude Code (`claude mcp add`), so you never see or copy the agent token;
 4. shows the wallet address, and waits until the USDC arrives if you like.
 
 You do not enter any merchant addresses: the first time the agent pays a service, a page asks you to allow it. Run `npm run setup` again to change the limits or switch to mainnet; the key, the history and the allowed services stay. `npm run setup -- --help` lists flags such as `--dry-run`, which shows every command without running it.
 
-The rest of this guide explains each step by hand.
+The rest of this guide explains each step by hand, using macOS paths. Linux and Windows differ only in where things live:
+
+|                     | macOS                                                  | Linux (systemd)                                   | Windows                                                                                     |
+| ------------------- | ------------------------------------------------------ | ------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| run setup           | `npm run setup`                                        | `npm run setup`                                   | `npm run setup` in a terminal opened "as administrator"                                     |
+| daemon account      | hidden user `_bursar`                                  | system user `bursar`                              | virtual service account `NT SERVICE\bursar`                                                 |
+| key, policy, ledger | `/var/db/bursar`                                       | `/var/lib/bursar`                                 | `%ProgramData%\bursar` (ACL: the service, SYSTEM, Administrators)                           |
+| code                | `/opt/bursar`                                          | `/opt/bursar`                                     | `%ProgramFiles%\bursar`                                                                     |
+| status, logs        | `launchctl print system/dev.bursar.daemon`             | `systemctl status bursar`, `journalctl -u bursar` | `Get-Service bursar`, `%ProgramData%\bursar\bursar.log`                                     |
+| restart             | `sudo launchctl kickstart -k system/dev.bursar.daemon` | `sudo systemctl restart bursar`                   | `Restart-Service bursar` (as Administrator)                                                 |
+| `bursar` command    | asks for sudo                                          | asks for sudo                                     | needs an Administrator terminal                                                             |
+| uninstall           | `sudo ./scripts/uninstall-macos.sh`                    | `sudo ./scripts/uninstall-linux.sh`               | `powershell -ExecutionPolicy Bypass -File scripts\uninstall-windows.ps1` (as Administrator) |
+
+On a Linux server without a browser, pass `--no-passkey` and register one later with `bursar passkey add`: open the printed link on a machine with a browser through an SSH tunnel (`ssh -L <port>:localhost:<port> server`), because passkeys only work on `localhost` or HTTPS. On WSL, turn systemd on first (`[boot] systemd=true` in `/etc/wsl.conf`, then `wsl --shutdown`); the Windows browser reaches the WSL `localhost`.
+
+On Windows the key is protected by an ACL and UAC: your normal, non-elevated terminal (and an agent running in it) cannot open `%ProgramData%\bursar`. Keep UAC on, and do not approve a UAC prompt you did not start.
 
 ---
 

@@ -1,12 +1,15 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { parsePolicy } from '../src/config.ts';
 import { parseUsd } from '../src/util.ts';
 import {
   balanceOfCall,
   buildPolicyYaml,
   checkUsd,
+  cmdQuote,
+  layoutFor,
   limitWarnings,
   NETWORKS,
   parseEvmAddress,
@@ -15,6 +18,7 @@ import {
 } from '../src/setup.ts';
 
 const TOKEN = 'a'.repeat(48);
+const SETUP = fileURLToPath(new URL('../src/setup.ts', import.meta.url));
 
 describe('setup: policy', () => {
   for (const network of ['testnet', 'mainnet'] as Network[]) {
@@ -23,7 +27,7 @@ describe('setup: policy', () => {
         const yaml = buildPolicyYaml(
           { network, limits: PRESETS[preset] },
           TOKEN,
-          '/var/db/bursar',
+          layoutFor('darwin'),
         );
         const p = parsePolicy(yaml, { baseDir: '/var/db/bursar', env: {} });
         const n = NETWORKS[network];
@@ -70,6 +74,55 @@ describe('setup: policy', () => {
   });
 });
 
+describe('setup: platforms', () => {
+  it('linux keeps state in /var/lib/bursar and restarts with systemd', () => {
+    const l = layoutFor('linux');
+    assert.equal(l.state, '/var/lib/bursar');
+    assert.equal(l.installer, 'scripts/install-linux.sh');
+    const yaml = buildPolicyYaml(
+      { network: 'testnet', limits: PRESETS.careful },
+      TOKEN,
+      l,
+    );
+    assert.match(yaml, /sudo systemctl restart bursar/);
+    const p = parsePolicy(yaml, { baseDir: '/', env: {} });
+    assert.equal(p.wallet.keyfile, '/var/lib/bursar/key');
+    assert.equal(p.state.ledgerPath, '/var/lib/bursar/bursar.db');
+  });
+
+  it('windows uses ProgramData with forward slashes in the policy', () => {
+    const l = layoutFor('win32', {
+      ProgramFiles: 'D:\\Programs',
+      ProgramData: 'D:\\Data',
+    });
+    assert.equal(l.state, 'D:\\Data\\bursar');
+    assert.equal(l.node, 'D:\\Programs\\bursar\\bin\\node.exe');
+    assert.equal(l.policy, 'D:\\Data\\bursar\\policy.yaml');
+    const yaml = buildPolicyYaml(
+      { network: 'testnet', limits: PRESETS.careful },
+      TOKEN,
+      l,
+    );
+    assert.match(yaml, /keyfile: D:\/Data\/bursar\/key\n/);
+    assert.match(yaml, /dir: D:\/Data\/bursar\n/);
+    const body = yaml
+      .split('\n')
+      .filter((line) => !line.startsWith('#'))
+      .join('\n');
+    assert.doesNotMatch(body, /\\/);
+    assert.equal(parsePolicy(yaml, { baseDir: '/', env: {} }).mode, 'enforce');
+  });
+
+  it('quotes cmd.exe arguments only when needed', () => {
+    assert.equal(cmdQuote('BURSAR_TOKEN=abc123'), 'BURSAR_TOKEN=abc123');
+    assert.equal(
+      cmdQuote('C:\\Program Files\\bursar\\bin\\node.exe'),
+      '"C:\\Program Files\\bursar\\bin\\node.exe"',
+    );
+    assert.equal(cmdQuote('a"b'), '"a""b"');
+  });
+});
+
 describe('setup: input checks', () => {
   it('accepts plain dollar amounts only', () => {
     assert.equal(checkUsd(' 0.1 ', 'x'), '0.10');
@@ -103,15 +156,10 @@ describe('setup: input checks', () => {
 
 describe('setup: command line', () => {
   it('--print-policy --yes prints a valid testnet policy without installing anything', () => {
-    const r = spawnSync(
-      process.execPath,
-      [
-        new URL('../src/setup.ts', import.meta.url).pathname,
-        '--print-policy',
-        '--yes',
-      ],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    const r = spawnSync(process.execPath, [SETUP, '--print-policy', '--yes'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     assert.equal(r.status, 0, r.stderr);
     const p = parsePolicy(r.stdout, { baseDir: '/', env: {} });
     assert.deepEqual(p.allow.chains, ['eip155:84532']);
@@ -119,15 +167,10 @@ describe('setup: command line', () => {
   });
 
   it('rejects unknown option values', () => {
-    const r = spawnSync(
-      process.execPath,
-      [
-        new URL('../src/setup.ts', import.meta.url).pathname,
-        '--network',
-        'eth',
-      ],
-      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
-    );
+    const r = spawnSync(process.execPath, [SETUP, '--network', 'eth'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
     assert.equal(r.status, 1);
     assert.match(r.stderr, /--network must be testnet or mainnet/);
   });
