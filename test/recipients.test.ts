@@ -140,7 +140,7 @@ describe('new recipients', () => {
       assert.equal(learned.length, 1);
       assert.equal(learned[0]?.address, STRANGER);
       assert.equal(learned[0]?.chain, 'eip155:8453');
-      assert.equal(learned[0]?.label, 'crypto.apitoll.cloud');
+      assert.equal(learned[0]?.label, 'crypto.apitoll.cloud (unverified)');
       assert.equal(learned[0]?.credential, 'laptop');
 
       assert.equal(
@@ -158,7 +158,9 @@ describe('new recipients', () => {
       };
       assert.ok(
         budget.recipients.some(
-          (x) => x.address === STRANGER && x.label === 'crypto.apitoll.cloud',
+          (x) =>
+            x.address === STRANGER &&
+            x.label === 'crypto.apitoll.cloud (unverified)',
         ),
       );
       const added = auditEvents(s.env).find(

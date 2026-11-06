@@ -357,6 +357,33 @@ async function select<T>(question: string, choices: Choice<T>[]): Promise<T> {
 
 // ---------- commands ----------
 
+// What bursar-update will trust, recorded by the installer at the first
+// install only: this checkout's origin and the SSH keys git uses to verify
+// signed commits (gpg.ssh.allowedSignersFile). Empty if either is missing.
+export function updateTrust(repo: string): string[] {
+  const git = (args: string[]): string =>
+    spawnSync('git', ['-C', repo, ...args], {
+      encoding: 'utf8',
+    }).stdout?.trim() ?? '';
+  const url = git(['remote', 'get-url', 'origin']).replace(
+    /^git@github\.com:/,
+    'https://github.com/',
+  );
+  const file = git(['config', 'gpg.ssh.allowedSignersFile']).replace(
+    /^~(?=\/)/,
+    homedir(),
+  );
+  if (!url.startsWith('https://') || file === '') return [];
+  try {
+    const signers = readFileSync(file, 'utf8').trim();
+    return signers === ''
+      ? []
+      : [`BURSAR_REPO_URL=${url}`, `BURSAR_ALLOWED_SIGNERS=${signers}`];
+  } catch {
+    return [];
+  }
+}
+
 function isElevated(): boolean {
   // `net session` only succeeds with an elevated (Administrator) token.
   return spawnSync('net.exe', ['session'], { stdio: 'ignore' }).status === 0;
@@ -767,8 +794,6 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
             'Bypass',
             '-File',
             script,
-            '-Node',
-            process.execPath,
             ...(yaml !== null ? ['-PolicyStdin', '-ReplacePolicy'] : []),
           ],
         ]
@@ -776,8 +801,8 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
           '/usr/bin/sudo',
           [
             '/usr/bin/env',
-            `NODE=${process.execPath}`,
             ...(yaml !== null ? ['POLICY_STDIN=1', 'REPLACE_POLICY=1'] : []),
+            ...updateTrust(repo),
             script,
           ],
         ];

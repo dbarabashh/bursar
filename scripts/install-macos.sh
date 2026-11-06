@@ -10,10 +10,7 @@ SRC=$(cd "$(dirname "$0")/.." && pwd)
 
 die() { echo "install: $*" >&2; exit 1; }
 
-[ "$(id -u)" = 0 ] || die 'run with sudo: sudo NODE="$(command -v node)" ./scripts/install-macos.sh'
-[ -n "${NODE:-}" ] && [ -x "$NODE" ] || die 'pass NODE="$(command -v node)" so the daemon gets the same Node 22+ you use'
-"$NODE" -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=18)?0:1)' || die "Node 22.18+ is required ($NODE is $("$NODE" -v))"
-[ -d "$SRC/node_modules/@noble/curves" ] || die "run npm ci in $SRC first"
+[ "$(id -u)" = 0 ] || die 'run with sudo: sudo ./scripts/install-macos.sh'
 
 if ! dscl . -read /Users/$RUNAS >/dev/null 2>&1; then
   ID=$(
@@ -35,9 +32,25 @@ if ! dscl . -read /Users/$RUNAS >/dev/null 2>&1; then
   echo "created hidden user $RUNAS (uid $ID), it cannot log in"
 fi
 
+# The daemon runs the official Node build pinned in node-release.sh, never the
+# operator's own node (see that file for why).
+. "$SRC/scripts/node-release.sh"
+NODE_TMP=$(mktemp -d)
+trap 'rm -rf "$NODE_TMP"' EXIT
+NODE_DIR=$(fetch_node "$NODE_TMP")
+echo "downloaded Node $NODE_VERSION (SHA-256 checked)"
+if [ ! -d "$SRC/node_modules" ]; then
+  # bursar-update: a fresh, root-owned checkout. Install from the lockfile and
+  # never run package scripts as root.
+  (cd "$SRC" && HOME="$NODE_TMP" npm_config_cache="$NODE_TMP/npm-cache" PATH="$NODE_DIR/bin:$PATH" \
+    "$NODE_DIR/bin/npm" ci --ignore-scripts --no-audit --no-fund --loglevel=error) || die 'npm ci failed'
+fi
+[ -d "$SRC/node_modules/@noble/curves" ] || die "run npm ci in $SRC first"
+
 rm -rf "$PREFIX.new"
 mkdir -p "$PREFIX.new/bin" "$PREFIX.new/app"
-install -m 755 "$NODE" "$PREFIX.new/bin/node"
+install -m 755 "$NODE_DIR/bin/node" "$PREFIX.new/bin/node"
+install -m 755 "$SRC/scripts/update.sh" "$PREFIX.new/bin/bursar-update"
 cp -R "$SRC/src" "$SRC/node_modules" "$SRC/package.json" "$PREFIX.new/app/"
 cat > "$PREFIX.new/bin/bursar" <<WRAP
 #!/bin/sh
@@ -57,7 +70,22 @@ mv "$PREFIX.new" "$PREFIX"
 rm -rf "$PREFIX.old"
 mkdir -p /usr/local/bin
 ln -sf "$PREFIX/bin/bursar" /usr/local/bin/bursar
+ln -sf "$PREFIX/bin/bursar-update" /usr/local/bin/bursar-update
 echo "installed code to $PREFIX (root-owned, your user cannot change it)"
+
+# Record once, at the first install, where bursar-update fetches from and which
+# keys must have signed what it installs. Root owns these; after this, a
+# checkout your user can edit is never needed to update.
+if [ ! -f /etc/bursar/update-repo ] && [ -n "${BURSAR_REPO_URL:-}" ] && [ -n "${BURSAR_ALLOWED_SIGNERS:-}" ]; then
+  mkdir -p /etc/bursar
+  printf '%s\n' "$BURSAR_REPO_URL" > /etc/bursar/update-repo
+  printf '%s\n' "$BURSAR_ALLOWED_SIGNERS" > /etc/bursar/allowed_signers
+  chown -R 0:0 /etc/bursar
+  chmod 755 /etc/bursar
+  chmod 644 /etc/bursar/update-repo /etc/bursar/allowed_signers
+  echo "bursar-update will install only commits from $BURSAR_REPO_URL signed by:"
+  sed 's/^/  /' /etc/bursar/allowed_signers
+fi
 
 mkdir -p "$STATE"
 chown $RUNAS:$RUNAS "$STATE"
@@ -76,8 +104,7 @@ if [ "${POLICY_STDIN:-}" = 1 ]; then
     [ "${REPLACE_POLICY:-}" = 1 ] || die "$STATE/policy.yaml exists; pass REPLACE_POLICY=1 to replace it"
     cp -p "$STATE/policy.yaml" "$STATE/policy.yaml.bak"
   fi
-  NEW_POLICY=$(mktemp)
-  trap 'rm -f "$NEW_POLICY"' EXIT
+  NEW_POLICY="$NODE_TMP/policy.yaml"
   cat > "$NEW_POLICY"
   [ -s "$NEW_POLICY" ] || die "POLICY_STDIN=1 but no policy came in on stdin"
   install -o root -g $RUNAS -m 640 "$NEW_POLICY" "$STATE/policy.yaml"

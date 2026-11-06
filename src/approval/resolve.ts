@@ -59,7 +59,12 @@ export function resolveApproval(
       learned = {
         recipient: normalizeAddress(String(intent['recipient'])),
         chain: String(intent['chain']),
-        label: recipientLabel(a.context.resourceUrl),
+        // The host comes from the agent's 402, not from anything bursar
+        // checked, so the stored label says so wherever it is listed.
+        label:
+          a.context.resourceUrl === null
+            ? recipientLabel(null)
+            : `${recipientLabel(a.context.resourceUrl)} (unverified)`,
       };
       if (
         !ledger.addLearnedRecipient({

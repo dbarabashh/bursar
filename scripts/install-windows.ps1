@@ -7,9 +7,8 @@
 # An agent running as you without elevation can do neither.
 #
 # From a terminal opened with "Run as administrator":
-#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -Node (Get-Command node).Source
+#   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-windows.ps1
 param(
-  [Parameter(Mandatory = $true)][string]$Node,
   # `npm run setup` pipes the policy in, so it never sits in a file a
   # non-elevated process (an agent) could rewrite before this script reads it.
   [switch]$PolicyStdin,
@@ -56,11 +55,27 @@ if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administra
 if ($PSVersionTable.PSEdition -ne 'Desktop') {
   Die 'run with Windows PowerShell (powershell.exe), not pwsh: the service host is compiled with the .NET Framework'
 }
-if (-not (Test-Path -PathType Leaf $Node)) { Die "Node not found at $Node; pass -Node (Get-Command node).Source" }
-# No double quotes inside node -e: Windows PowerShell 5.1 strips them from native arguments.
-& $Node -e 'const [a,b]=process.versions.node.split(''.'').map(Number); process.exit(a>22||(a===22&&b>=18)?0:1)'
-if ($LASTEXITCODE -ne 0) { Die "Node 22.18+ is required ($Node is $(& $Node -v))" }
 if (-not (Test-Path (Join-Path $Src 'node_modules\@noble\curves'))) { Die "run npm ci in $Src first" }
+
+# The service runs the official Node build, pinned here by SHA-256, never the
+# operator's own node.exe: that can sit in a folder a non-elevated process
+# (an agent) can write. Keep NodeVersion in step with scripts/node-release.sh.
+$NodeVersion = 'v22.23.4'
+$NodeSha256 = 'cbc74b5e0982c9dbb41525fd8fb5dcd32fbee237863f7829072f4639a1ce5f20'
+if ($env:PROCESSOR_ARCHITECTURE -ne 'AMD64') { Die "no pinned Node build for $env:PROCESSOR_ARCHITECTURE" }
+$NodeTmp = Join-Path ([IO.Path]::GetTempPath()) ("bursar-node-" + [guid]::NewGuid())
+New-Item -ItemType Directory -Path $NodeTmp | Out-Null
+$NodeZip = Join-Path $NodeTmp 'node.zip'
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+$ProgressPreference = 'SilentlyContinue'
+Invoke-WebRequest -UseBasicParsing -Uri "https://nodejs.org/dist/$NodeVersion/node-$NodeVersion-win-x64.zip" -OutFile $NodeZip
+if ((Get-FileHash -Algorithm SHA256 $NodeZip).Hash -ne $NodeSha256) {
+  Remove-Item -Recurse -Force $NodeTmp
+  Die "node-$NodeVersion-win-x64.zip does not match its pinned SHA-256; not installing it"
+}
+Expand-Archive -Path $NodeZip -DestinationPath $NodeTmp
+$NodeExeSrc = Join-Path $NodeTmp "node-$NodeVersion-win-x64\node.exe"
+Write-Host "downloaded Node $NodeVersion (SHA-256 checked)"
 
 # Stop a running daemon first: Windows does not let us replace files in use.
 $svc = Get-Service -Name $Name -ErrorAction SilentlyContinue
@@ -74,7 +89,8 @@ $New = "$Prefix.new"
 $Old = "$Prefix.old"
 if (Test-Path $New) { Remove-Item -Recurse -Force $New }
 New-Item -ItemType Directory -Force -Path (Join-Path $New 'bin'), (Join-Path $New 'app'), (Join-Path $New 'cli') | Out-Null
-Copy-Item -Path $Node -Destination (Join-Path $New 'bin\node.exe')
+Copy-Item -Path $NodeExeSrc -Destination (Join-Path $New 'bin\node.exe')
+Remove-Item -Recurse -Force $NodeTmp
 foreach ($item in 'src', 'node_modules', 'package.json') {
   Copy-Item -Recurse -Path (Join-Path $Src $item) -Destination (Join-Path $New 'app')
 }

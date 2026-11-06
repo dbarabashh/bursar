@@ -28,12 +28,9 @@ describe('audit: setup hands the policy to the root installer on stdin', () => {
       ],
       { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
     );
-    const install = out
-      .split('\n')
-      .find((l) => /install-(macos|linux)/.test(l));
-    assert.ok(install, out);
-    assert.match(install, /POLICY_STDIN=1/);
-    assert.doesNotMatch(install, /POLICY_FILE=/);
+    assert.match(out, /install-(macos|linux)\.sh/);
+    assert.match(out, /POLICY_STDIN=1/);
+    assert.doesNotMatch(out, /POLICY_FILE=/);
   });
 
   for (const script of ['install-macos.sh', 'install-linux.sh']) {
@@ -58,6 +55,7 @@ describe('audit: setup hands the policy to the root installer on stdin', () => {
           env: {
             PATH: process.env['PATH'] ?? '/usr/bin:/bin',
             STATE: state,
+            NODE_TMP: mkdtempSync(join(state, 'node-')),
             RUNAS: 'nobody',
             POLICY_STDIN: '1',
             REPLACE_POLICY: '1',

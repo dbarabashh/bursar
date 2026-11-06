@@ -32,6 +32,7 @@ The rest of this guide explains each step by hand, using macOS paths. Linux and 
 | status, logs        | `launchctl print system/dev.bursar.daemon`             | `systemctl status bursar`, `journalctl -u bursar` | `Get-Service bursar`, `%ProgramData%\bursar\bursar.log`                                     |
 | restart             | `sudo launchctl kickstart -k system/dev.bursar.daemon` | `sudo systemctl restart bursar`                   | `Restart-Service bursar` (as Administrator)                                                 |
 | `bursar` command    | asks for sudo                                          | asks for sudo                                     | needs an Administrator terminal                                                             |
+| update              | `sudo bursar-update`                                   | `sudo bursar-update`                              | `npm run setup -- --keep-policy` from a clean checkout, as Administrator                    |
 | uninstall           | `sudo ./scripts/uninstall-macos.sh`                    | `sudo ./scripts/uninstall-linux.sh`               | `powershell -ExecutionPolicy Bypass -File scripts\uninstall-windows.ps1` (as Administrator) |
 
 On a Linux server without a browser, pass `--no-passkey` and register one later with `bursar passkey add`: open the printed link on a machine with a browser through an SSH tunnel (`ssh -L <port>:localhost:<port> server`), because passkeys only work on `localhost` or HTTPS. On WSL, turn systemd on first (`[boot] systemd=true` in `/etc/wsl.conf`, then `wsl --shutdown`); the Windows browser reaches the WSL `localhost`.
@@ -106,22 +107,23 @@ If anything is red, stop here. All commands below run from the root of this clon
 ## 3. Install under a separate user
 
 ```sh
-sudo NODE="$(command -v node)" ./scripts/install-macos.sh
+sudo ./scripts/install-macos.sh
 ```
 
 You do not need to know any merchant address up front.
 
 What the script does (read `scripts/install-macos.sh` before you run it, it is about 120 lines of sh):
 
-| What                   | Where                                            | Owner and mode      | Why                                                          |
-| ---------------------- | ------------------------------------------------ | ------------------- | ------------------------------------------------------------ |
-| hidden user `_bursar`  | uid 450–499, no login, no shell                  |                     | the daemon runs as this user                                 |
-| bursar code and `node` | `/opt/bursar`                                    | `root`, 755         | neither you nor the agent can modify it                      |
-| **wallet key**         | `/var/db/bursar/key`                             | `_bursar`, 600      | only the daemon reads it                                     |
-| policy                 | `/var/db/bursar/policy.yaml`                     | `root:_bursar`, 640 | the daemon reads it, only you change it, with `sudo`         |
-| ledger, audit log, log | `/var/db/bursar/`                                | `_bursar`, 700      |                                                              |
-| autostart              | `/Library/LaunchDaemons/dev.bursar.daemon.plist` | root                | starts the daemon at boot and restarts it if it crashes      |
-| `bursar` command       | `/usr/local/bin/bursar`                          | root                | wrapper that runs `sudo -u _bursar` and adds the policy path |
+| What                   | Where                                            | Owner and mode      | Why                                                                                                                    |
+| ---------------------- | ------------------------------------------------ | ------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| hidden user `_bursar`  | uid 450–499, no login, no shell                  |                     | the daemon runs as this user                                                                                           |
+| bursar code and `node` | `/opt/bursar`                                    | `root`, 755         | neither you nor the agent can modify it; `node` is the official build, downloaded and checked against a pinned SHA-256 |
+| update trust           | `/etc/bursar`                                    | `root`, 644         | the repository and signing keys `bursar-update` accepts (setup records them at the first install)                      |
+| **wallet key**         | `/var/db/bursar/key`                             | `_bursar`, 600      | only the daemon reads it                                                                                               |
+| policy                 | `/var/db/bursar/policy.yaml`                     | `root:_bursar`, 640 | the daemon reads it, only you change it, with `sudo`                                                                   |
+| ledger, audit log, log | `/var/db/bursar/`                                | `_bursar`, 700      |                                                                                                                        |
+| autostart              | `/Library/LaunchDaemons/dev.bursar.daemon.plist` | root                | starts the daemon at boot and restarts it if it crashes                                                                |
+| `bursar` command       | `/usr/local/bin/bursar`                          | root                | wrapper that runs `sudo -u _bursar` and adds the policy path                                                           |
 
 At the end the script prints two things:
 
@@ -307,19 +309,19 @@ Then check three things:
 
 Each of these asks for your sudo password on its own.
 
-| What                               | Command                                                                                             |
-| ---------------------------------- | --------------------------------------------------------------------------------------------------- |
-| what is waiting for approval       | `bursar approvals`                                                                                  |
-| deny                               | `bursar deny apr_…`                                                                                 |
-| report                             | `bursar report --period day` (or `month`, `all`)                                                    |
-| who the agent may pay              | `bursar recipients`                                                                                 |
-| stop trusting a service            | `bursar recipients remove 0x…` (takes effect on the next payment, no restart)                       |
-| daemon log                         | `sudo tail -f /var/db/bursar/bursar.log`                                                            |
-| is the daemon alive                | `launchctl print system/dev.bursar.daemon \| grep state`                                            |
-| **emergency stop**                 | `sudo launchctl bootout system/dev.bursar.daemon`                                                   |
-| start again                        | `sudo launchctl bootstrap system /Library/LaunchDaemons/dev.bursar.daemon.plist`                    |
-| update the code after repo changes | run `sudo NODE="$(command -v node)" ./scripts/install-macos.sh` again (key and policy are kept)     |
-| change the limits                  | `sudo nano /var/db/bursar/policy.yaml`, then `sudo launchctl kickstart -k system/dev.bursar.daemon` |
+| What                         | Command                                                                                                      |
+| ---------------------------- | ------------------------------------------------------------------------------------------------------------ |
+| what is waiting for approval | `bursar approvals`                                                                                           |
+| deny                         | `bursar deny apr_…`                                                                                          |
+| report                       | `bursar report --period day` (or `month`, `all`)                                                             |
+| who the agent may pay        | `bursar recipients`                                                                                          |
+| stop trusting a service      | `bursar recipients remove 0x…` (takes effect on the next payment, no restart)                                |
+| daemon log                   | `sudo tail -f /var/db/bursar/bursar.log`                                                                     |
+| is the daemon alive          | `launchctl print system/dev.bursar.daemon \| grep state`                                                     |
+| **emergency stop**           | `sudo launchctl bootout system/dev.bursar.daemon`                                                            |
+| start again                  | `sudo launchctl bootstrap system /Library/LaunchDaemons/dev.bursar.daemon.plist`                             |
+| update bursar                | `sudo bursar-update` (installs the newest signed commit of the recorded repository; key and policy are kept) |
+| change the limits            | `sudo nano /var/db/bursar/policy.yaml`, then `sudo launchctl kickstart -k system/dev.bursar.daemon`          |
 
 After an emergency stop, no new payment gets signed. Signatures already handed out stay valid until their `validBefore`, which is a few minutes.
 
