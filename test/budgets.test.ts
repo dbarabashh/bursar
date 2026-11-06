@@ -3,6 +3,7 @@ import { spawnSync } from 'node:child_process';
 import { appendFileSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { buildReport, formatReport, periodFor } from '../src/report.ts';
 import { canonicalJson, sha256Hex } from '../src/util.ts';
 import {
@@ -416,7 +417,7 @@ describe('spend report', () => {
     try {
       const policyPath = join(env.dir, 'policy.yaml');
       writeFileSync(policyPath, policyYaml({ approval: '0.50' }));
-      const cli = new URL('../src/index.ts', import.meta.url).pathname;
+      const cli = fileURLToPath(new URL('../src/index.ts', import.meta.url));
       const run = spawnSync(
         process.execPath,
         [cli, 'report', '--policy', policyPath, '--period', 'all', '--json'],

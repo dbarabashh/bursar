@@ -3,6 +3,7 @@ import { spawn } from 'node:child_process';
 import { createServer, type Server } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import { createMcpServer } from '../src/mcp/server.ts';
 import {
   cleanup,
@@ -257,7 +258,7 @@ describe('mcp server', () => {
   it('speaks MCP over stdio', async () => {
     const child = spawn(
       process.execPath,
-      [new URL('../src/mcp/server.ts', import.meta.url).pathname],
+      [fileURLToPath(new URL('../src/mcp/server.ts', import.meta.url))],
       {
         env: {
           ...process.env,

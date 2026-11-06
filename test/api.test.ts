@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { readdirSync, readFileSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { after, before, describe, it } from 'node:test';
+import { fileURLToPath } from 'node:url';
 import type { Server } from 'node:http';
 import {
   cleanup,
@@ -283,14 +284,14 @@ describe('no raw signing, no key extraction', () => {
   });
 
   it('only src/signer imports the keystore, and nothing calls raw-message signing helpers', () => {
-    const root = new URL('../src/', import.meta.url).pathname;
+    const root = fileURLToPath(new URL('../src/', import.meta.url));
     const walk = (d: string): string[] =>
       readdirSync(d, { withFileTypes: true }).flatMap((e) =>
         e.isDirectory() ? walk(join(d, e.name)) : [join(d, e.name)],
       );
     for (const file of walk(root)) {
       const src = readFileSync(file, 'utf8');
-      const rel = file.slice(root.length);
+      const rel = file.slice(root.length).replaceAll('\\', '/');
       if (!rel.startsWith('signer/') && rel !== 'index.ts')
         assert.ok(!/keystore/.test(src), `${rel} touches the keystore`);
       if (rel === 'index.ts')

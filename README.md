@@ -30,13 +30,13 @@ flowchart LR
   api["Paid API<br/>(merchant)"]
   fac["Facilitator"]
   chain[("Blockchain")]
-  human(["Human<br/>(Touch ID)"])
+  human(["Human<br/>(passkey)"])
 
   subgraph bursar["bursar daemon · 127.0.0.1:8402"]
     direction TB
     parse["Parse into a canonical intent<br/>from the fields that get signed"]
     policy["Policy: allowlists + limits"]
-    approve["Approval above the threshold"]
+    approve["Approval: new service<br/>or above the threshold"]
     sign["Sign with the key<br/>(never leaves src/signer/)"]
     ledger[("SQLite ledger<br/>+ hash-chained audit log")]
     parse --> policy --> approve --> sign --> ledger
@@ -62,7 +62,11 @@ sequenceDiagram
   M-->>A: 402 + payment requirements
   A->>B: POST /v1/sign {protocol, payload, idempotencyKey, resourceHash}
   B->>B: intent from the signed fields, then allowlists and limits
-  alt above approval_threshold
+  alt new service (unknown_recipients: ask)
+    B-->>A: 202 pending + approvalUrl, reason new_recipient
+    H->>B: Allow once / Always allow this service (passkey)
+    A->>B: same request, same idempotencyKey
+  else above approval_threshold
     B-->>A: 202 pending + approvalId
     H->>B: approve (passkey or CLI)
     A->>B: same request, same idempotencyKey
@@ -87,7 +91,7 @@ sequenceDiagram
 - Double spending through retries. Idempotency keys are scoped per agent. The same key returns the same result and is charged once, and the same key with a different payload returns `409`.
 - Races. Each decide-sign-record step runs in a `BEGIN IMMEDIATE` transaction, so even two daemons sharing one ledger file cannot both pass the daily limit.
 - Paying for a different resource than the one requested. With `resource` + `resourceHash`, bursar recomputes the hash and checks it against the URL in the 402 payment requirements. For MPP the hash becomes the TIP-20 memo.
-- Key exposure through the process boundary. The key is loaded only in `src/signer/keystore.ts` (from a `chmod 600` file owned by the daemon user, or from an env var that is deleted after reading). It lives only inside the signer closure and is zeroed on shutdown. The HTTP server binds to loopback, rejects non-loopback `Host` headers (DNS rebinding), and requires a bearer token per agent.
+- Key exposure through the process boundary. The key is loaded only in `src/signer/keystore.ts` (from a `chmod 600` file owned by the daemon user, ACL-locked on Windows, or from an env var that is deleted after reading). It lives only inside the signer closure and is zeroed on shutdown. The HTTP server binds to loopback, rejects non-loopback `Host` headers (DNS rebinding), and requires a bearer token per agent.
 - Silent tampering with history. The audit log is append-only JSONL, and each entry carries the sha256 of the previous line.
 
 **Does not protect against**

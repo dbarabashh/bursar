@@ -55,7 +55,8 @@ if ($PSVersionTable.PSEdition -ne 'Desktop') {
   Die 'run with Windows PowerShell (powershell.exe), not pwsh: the service host is compiled with the .NET Framework'
 }
 if (-not (Test-Path -PathType Leaf $Node)) { Die "Node not found at $Node; pass -Node (Get-Command node).Source" }
-& $Node -e 'const [a,b]=process.versions.node.split(".").map(Number); process.exit(a>22||(a===22&&b>=18)?0:1)'
+# No double quotes inside node -e: Windows PowerShell 5.1 strips them from native arguments.
+& $Node -e 'const [a,b]=process.versions.node.split(''.'').map(Number); process.exit(a>22||(a===22&&b>=18)?0:1)'
 if ($LASTEXITCODE -ne 0) { Die "Node 22.18+ is required ($Node is $(& $Node -v))" }
 if (-not (Test-Path (Join-Path $Src 'node_modules\@noble\curves'))) { Die "run npm ci in $Src first" }
 
@@ -241,7 +242,7 @@ if ($PolicyFile) {
   Write-Host "wrote $PolicyPath from setup (the service can only read it)"
 } elseif (-not (Test-Path $PolicyPath)) {
   # The same policy `npm run setup` writes with its defaults (testnet, careful limits).
-  $newToken = (& $NodeExe -e 'process.stdout.write(require("node:crypto").randomBytes(24).toString("hex"))')
+  $newToken = (& $NodeExe -e 'process.stdout.write(require(''node:crypto'').randomBytes(24).toString(''hex''))')
   $printed = (& $NodeExe (Join-Path $Prefix 'app\src\setup.ts') --print-policy --yes) -join "`n"
   if ($LASTEXITCODE -ne 0 -or $printed -notmatch '__AGENT_TOKEN_SET_BY_INSTALLER__') {
     Die 'could not write the default policy (npm run setup -- --print-policy --yes failed)'

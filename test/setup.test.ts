@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { describe, it } from 'node:test';
 import { fileURLToPath } from 'node:url';
+import { join } from 'node:path';
 import { parsePolicy } from '../src/config.ts';
 import { parseUsd } from '../src/util.ts';
 import {
@@ -39,7 +40,7 @@ describe('setup: policy', () => {
         assert.equal(p.mode, 'enforce');
         assert.equal(p.agents[0]?.id, 'claude-code');
         assert.equal(p.wallet.keyfile, '/var/db/bursar/key');
-        assert.equal(p.state.ledgerPath, '/var/db/bursar/bursar.db');
+        assert.equal(p.state.ledgerPath, join('/var/db/bursar', 'bursar.db'));
         const micro = (usd: string) => parseUsd(usd, 'test');
         assert.equal(p.limits.perTx, micro(PRESETS[preset].perTx));
         assert.equal(p.limits.perDay, micro(PRESETS[preset].perDay));
@@ -87,7 +88,7 @@ describe('setup: platforms', () => {
     assert.match(yaml, /sudo systemctl restart bursar/);
     const p = parsePolicy(yaml, { baseDir: '/', env: {} });
     assert.equal(p.wallet.keyfile, '/var/lib/bursar/key');
-    assert.equal(p.state.ledgerPath, '/var/lib/bursar/bursar.db');
+    assert.equal(p.state.ledgerPath, join('/var/lib/bursar', 'bursar.db'));
   });
 
   it('windows uses ProgramData with forward slashes in the policy', () => {

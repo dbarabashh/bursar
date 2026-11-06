@@ -44,13 +44,13 @@ On Windows the key is protected by an ACL and UAC: your normal, non-elevated ter
 
 ```mermaid
 flowchart LR
-  you(["You<br/>(Touch ID)"])
-  subgraph yours["your macOS user"]
+  you(["You<br/>(passkey: Touch ID,<br/>Windows Hello, key, phone)"])
+  subgraph yours["your user (not elevated)"]
     cc["Claude Code<br/>(agent)"]
     mcp["bursar-mcp<br/>(agent token only)"]
   end
-  subgraph isolated["user _bursar"]
-    daemon["bursar daemon<br/>key, policy, ledger<br/>/var/db/bursar (700)"]
+  subgraph isolated["daemon account<br/>_bursar · bursar · NT SERVICE\bursar"]
+    daemon["bursar daemon<br/>key, policy, ledger<br/>(only this account and admins)"]
   end
   api["Paid API<br/>(merchant)"]
   fac["Facilitator<br/>(x402.org, CDP)"]
@@ -59,21 +59,21 @@ flowchart LR
   cc -- "pay(url)" --> mcp
   mcp -- "POST /v1/sign + agent token" --> daemon
   mcp <-- "402 / retry with payment" --> api
-  you -. "approve large payments" .-> daemon
+  you -. "approve new services<br/>and large payments" .-> daemon
   api -- "verify / settle" --> fac --> chain
 ```
 
-The core idea: **only whoever holds the key can spend the money, and only the `_bursar` process holds the key**. Claude Code runs as your user, so:
+The core idea: **only whoever holds the key can spend the money, and only the daemon account holds the key** (`_bursar` on macOS, `bursar` on Linux, `NT SERVICE\bursar` on Windows). Claude Code runs as your user, so:
 
-| The agent can             | The agent cannot                                                   |
-| ------------------------- | ------------------------------------------------------------------ |
-| ask bursar to pay         | read the key (`/var/db/bursar/key` is readable only by `_bursar`)  |
-| check its own budget      | change the policy (the file belongs to root)                       |
-| open a task with a budget | swap out bursar's code (`/opt/bursar` belongs to root)             |
-|                           | approve a payment (that takes your Touch ID or your sudo password) |
-|                           | stop or restart the daemon (it belongs to launchd and `_bursar`)   |
+| The agent can             | The agent cannot                                                                                   |
+| ------------------------- | -------------------------------------------------------------------------------------------------- |
+| ask bursar to pay         | read the key (readable only by the daemon account, and by root / elevated Administrators)          |
+| check its own budget      | change the policy (the file belongs to root / Administrators)                                      |
+| open a task with a budget | swap out bursar's code (`/opt/bursar` or `%ProgramFiles%\bursar` belongs to root / Administrators) |
+|                           | approve a payment (that takes your passkey)                                                        |
+|                           | stop or restart the daemon (it belongs to launchd, systemd or the Windows service manager)         |
 
-If the key sits in your home directory and the agent has a shell, every limit depends on the agent choosing to respect it. That is why the install below puts the key and the agent under different macOS users.
+If the key sits in your home directory and the agent has a shell, every limit depends on the agent choosing to respect it. That is why the install below puts the key and the agent under different system accounts.
 
 **What this does not protect.** bursar limits _how much and to whom_. The agent can still spend its allowance on things you did not need. That is the price of autonomy, so set limits you can afford to lose. bursar counts a payment when it signs it, not when the chain settles it.
 
@@ -81,9 +81,10 @@ If the key sits in your home directory and the agent has a shell, every limit de
 
 ## 1. What you need
 
-- A Mac with Touch ID, and Chrome (for passkey approvals).
+- macOS, Linux with systemd, or Windows 10/11.
+- A passkey: Touch ID, Windows Hello, a security key, or a phone. Chrome or Edge for the approval pages.
 - Node 22.18+ (`node -v`).
-- Admin rights on the Mac (for `sudo`).
+- Admin rights (`sudo` on macOS and Linux, an Administrator terminal on Windows).
 - **A second address for the test merchant to receive payments** (only for the testnet merchant in step 7). Any EVM address you control, for example from Rabby or MetaMask. On the testnet you are paying yourself.
 
 ---

@@ -1,3 +1,4 @@
+import { fileURLToPath } from 'node:url';
 import {
   existsSync,
   mkdirSync,
@@ -11,7 +12,7 @@ import { secp256k1 } from '@noble/curves/secp256k1.js';
 import { OFFERS, startMerchant } from './merchant.ts';
 
 const PORT = 8500;
-const root = new URL('..', import.meta.url).pathname;
+const root = fileURLToPath(new URL('..', import.meta.url));
 const dir = join(root, 'sandbox', '.local');
 const envFile = join(dir, 'env');
 
