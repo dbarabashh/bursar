@@ -1,4 +1,8 @@
 import {
+  CASHU_DECIMALS,
+  currencyOfChain,
+  findMintRule,
+  isCashuChain,
   normalizeAddress,
   type AssetRule,
   type Policy,
@@ -21,6 +25,7 @@ export function learnedRule(r: LearnedRecipient): RecipientRule {
     address: r.address,
     label: r.label,
     maxUsdDay: null,
+    maxSatDay: null,
     chains: [r.chain],
   };
 }
@@ -46,11 +51,30 @@ function onChain(chains: string[] | null, chain: string): boolean {
   return chains === null || chains.includes(chain);
 }
 
+// On cashu:<unit> the "asset" is the mint that issued the ecash; its base unit
+// is the cent for usd (NUT-01 minor unit) and the satoshi for sat.
+function cashuAsset(
+  policy: Policy,
+  chain: 'cashu:sat' | 'cashu:usd',
+  mint: string,
+): AssetRule | undefined {
+  const unit = currencyOfChain(chain);
+  const rule = findMintRule(policy.cashu, mint, unit);
+  if (rule === undefined) return undefined;
+  return {
+    address: rule.url,
+    decimals: CASHU_DECIMALS[unit],
+    chains: [chain],
+    label: rule.label,
+  };
+}
+
 export function findAsset(
   policy: Policy,
   chain: string,
   asset: string,
 ): AssetRule | undefined {
+  if (isCashuChain(chain)) return cashuAsset(policy, chain, asset);
   const a = normalizeAddress(asset);
   return policy.allow.assets.find(
     (r) => r.address === a && onChain(r.chains, chain),
@@ -86,18 +110,31 @@ export function checkAllowlist(
   // A max_usd_day set for the address applies on every chain, including
   // chains it was only learned on or is being asked for.
   let cap: bigint | null = null;
-  for (const r of matches)
+  let satCap: bigint | null = null;
+  for (const r of matches) {
     if (r.maxUsdDay !== null && (cap === null || r.maxUsdDay < cap))
       cap = r.maxUsdDay;
+    if (r.maxSatDay !== null && (satCap === null || r.maxSatDay < satCap))
+      satCap = r.maxSatDay;
+  }
   const capped = (r: RecipientRule): RecipientRule =>
-    cap === null ? r : { ...r, maxUsdDay: cap };
+    cap === null && satCap === null
+      ? r
+      : {
+          ...r,
+          maxUsdDay: cap ?? r.maxUsdDay,
+          maxSatDay: satCap ?? r.maxSatDay,
+        };
   const rule = matches.find((r) => onChain(r.chains, intent.chain));
   if (rule) return { ok: true, asset, recipient: capped(rule), unknown: false };
   if (policy.allow.unknownRecipients === 'ask')
     return {
       ok: true,
       asset,
-      recipient: cap === null ? null : capped({ ...matches[0]!, chains: null }),
+      recipient:
+        cap === null && satCap === null
+          ? null
+          : capped({ ...matches[0]!, chains: null }),
       unknown: true,
     };
   return {

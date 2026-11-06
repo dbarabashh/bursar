@@ -74,3 +74,17 @@ server:
   port: 8402
 
 mode: enforce
+
+# Cashu ecash (NUT-24 `X-Cashu` 402 payments). Off unless this section exists
+# and allow.chains lists cashu:sat and/or cashu:usd. Payments in sat use the
+# separate `sat` limits (add `sat:` next to `usd:` in limits; per_tx and
+# per_day are required, and approval_threshold needs one too). Nothing is
+# converted between sat and USD. Recipients are the merchant's P2PK key
+# (02…/03…) for locked requests, or the https origin bursar delivers an
+# unlocked token to, e.g. { address: 'https://api.example.com', max_sat_day: 2000 }.
+#
+# cashu:
+#   mints:
+#     - { url: 'https://mint.example.com', units: [sat], max_balance: 50000 }
+#   max_fee: { sat: 10, usd: 0.02 }   # mint input fees per payment
+#   delivery_timeout_seconds: 30

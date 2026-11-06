@@ -34,7 +34,7 @@ const TOOLS = [
   {
     name: 'pay',
     description:
-      'Fetch a URL that may cost money. If the server answers HTTP 402 (x402 or MPP), the payment is sent to the local bursar daemon, which checks it against the spending policy the human set and signs it. ' +
+      'Fetch a URL that may cost money. If the server answers HTTP 402 (x402, MPP or Cashu X-Cashu), the payment is sent to the local bursar daemon, which checks it against the spending policy the human set and signs it. ' +
       'You never see or hold a key. If bursar denies the payment, do not look for another way to pay; tell the human the reason. ' +
       'If the payment needs human approval you get status pending_approval and an approvalUrl: show the human the URL, wait until they say they approved it, then call pay again with the same arguments.',
     inputSchema: {
@@ -82,10 +82,14 @@ const TOOLS = [
           type: 'string',
           description: 'decimal dollars, e.g. "0.50"',
         },
+        budget_sat: {
+          type: 'string',
+          description:
+            'satoshis for Cashu payments in sat, e.g. "500" (a separate budget, never converted from USD)',
+        },
         ttl_seconds: { type: 'number', default: 3600 },
         label: { type: 'string' },
       },
-      required: ['budget_usd'],
       additionalProperties: false,
     },
   },
@@ -101,6 +105,10 @@ type PayArgs = {
 };
 
 class ToolError extends Error {}
+
+// What a payment cost, in its own currency (Cashu sat payments carry `sat`).
+const amountOf = (r: Record<string, unknown>) =>
+  r['sat'] === undefined ? { usd: r['usd'] } : { sat: r['sat'] };
 
 function text(value: unknown, isError = false): ToolResult {
   const out: ToolResult = {
@@ -169,7 +177,22 @@ function parsePayArgs(args: Record<string, unknown>): PayArgs {
 function paymentRequest(
   res: Response,
   bodyText: string,
-): { protocol: 'x402' | 'mpp'; payload: Record<string, unknown> } {
+  a: PayArgs,
+): { protocol: 'x402' | 'mpp' | 'cashu'; payload: Record<string, unknown> } {
+  // NUT-24. bursar delivers an unlocked token itself, so it gets the request
+  // headers and body to send along with it.
+  const cashu = res.headers.get('x-cashu');
+  if (cashu && /^creq(a|b1)/i.test(cashu.trim()))
+    return {
+      protocol: 'cashu',
+      payload: {
+        paymentRequest: cashu.trim(),
+        deliver: {
+          headers: a.headers,
+          ...(a.body === undefined ? {} : { body: a.body }),
+        },
+      },
+    };
   const required = res.headers.get('payment-required');
   if (required) {
     try {
@@ -289,7 +312,7 @@ export function createMcpServer(deps: McpDeps) {
           body: clip(first.text),
         });
       }
-      const { protocol, payload } = paymentRequest(first.res, first.text);
+      const { protocol, payload } = paymentRequest(first.res, first.text, a);
       request = {
         protocol,
         payload,
@@ -336,6 +359,33 @@ export function createMcpServer(deps: McpDeps) {
         true,
       );
     }
+    if (result['status'] === 'processing') {
+      return text({
+        paid: false,
+        status: 'processing',
+        reason: result['reason'] ?? null,
+        next: 'bursar has started this payment but the mint did not answer yet. Call pay again with the same arguments in a minute; it will not pay twice.',
+      });
+    }
+    // Cashu without a lock: bursar delivered the token itself and returns the
+    // merchant's answer. The agent never holds the ecash.
+    if (result['status'] === 'paid') {
+      const resp = isRecord(result['response']) ? result['response'] : {};
+      const st = typeof resp['status'] === 'number' ? resp['status'] : 0;
+      const ok = st >= 200 && st < 300;
+      return text(
+        {
+          paid: ok,
+          ...amountOf(result),
+          recipient: result['recipient'],
+          chain: result['chain'],
+          status: st,
+          body: clip(typeof resp['body'] === 'string' ? resp['body'] : ''),
+          ...(result['note'] === undefined ? {} : { note: result['note'] }),
+        },
+        !ok,
+      );
+    }
     if (result['status'] !== 'signed') {
       return text(
         {
@@ -379,7 +429,7 @@ export function createMcpServer(deps: McpDeps) {
     return text(
       {
         paid: second.res.ok,
-        usd: result['usd'],
+        ...amountOf(result),
         recipient: result['recipient'],
         chain: result['chain'],
         status: second.res.status,
@@ -407,13 +457,15 @@ export function createMcpServer(deps: McpDeps) {
       }
       if (name === 'open_task') {
         const budgetUsd = optString(args, 'budget_usd');
-        if (budgetUsd === undefined)
-          throw new ToolError('budget_usd is required');
+        const budgetSat = optString(args, 'budget_sat');
+        if (budgetUsd === undefined && budgetSat === undefined)
+          throw new ToolError('budget_usd or budget_sat is required');
         const ttl = args['ttl_seconds'];
         const body: Record<string, unknown> = {
-          budgetUsd,
           ttlSeconds: typeof ttl === 'number' ? ttl : 3600,
         };
+        if (budgetUsd !== undefined) body['budgetUsd'] = budgetUsd;
+        if (budgetSat !== undefined) body['budgetSat'] = budgetSat;
         const label = optString(args, 'label');
         if (label !== undefined) body['label'] = label;
         const out = await bursar('/v1/tasks', { method: 'POST', body });

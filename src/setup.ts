@@ -24,9 +24,10 @@ import { emitKeypressEvents } from 'node:readline';
 import { createInterface } from 'node:readline/promises';
 import { fileURLToPath } from 'node:url';
 import { parseArgs } from 'node:util';
-import { DEFAULT_PORT, parsePolicy } from './config.ts';
+import { createMintClient, type Fetch } from './cashu/mint.ts';
+import { DEFAULT_PORT, normalizeMintUrl, parsePolicy } from './config.ts';
 import { rpcCall } from './protocols/common.ts';
-import { formatUsd, parseUsd } from './util.ts';
+import { formatUsd, isRecord, parseUsd } from './util.ts';
 
 export type Os = 'darwin' | 'linux' | 'win32';
 
@@ -161,9 +162,41 @@ export const PRESETS: Record<'careful' | 'normal', Limits> = {
   },
 };
 
+// Cashu ecash in sats: its own limits, never converted to or from USD.
+export type SatLimits = {
+  perTx: number;
+  perDay: number;
+  perMonth: number;
+  threshold: number;
+  maxBalance: number;
+};
+
+export const SAT_PRESETS: Record<'careful' | 'normal', SatLimits> = {
+  careful: {
+    perTx: 100,
+    perDay: 1000,
+    perMonth: 5000,
+    threshold: 50,
+    maxBalance: 10_000,
+  },
+  normal: {
+    perTx: 1000,
+    perDay: 10_000,
+    perMonth: 50_000,
+    threshold: 500,
+    maxBalance: 50_000,
+  },
+};
+
+export type CashuAnswers = { mint: string; limits: SatLimits };
+
+// A public test mint whose lightning is fake: free ecash to try things.
+export const TEST_MINT = 'https://testnut.cashu.space';
+
 export type Answers = {
   network: Network;
   limits: Limits;
+  cashu: CashuAnswers | null;
   connectClaude: boolean;
 };
 
@@ -191,13 +224,102 @@ export function limitWarnings(l: Limits): string[] {
   return out;
 }
 
+export function checkSat(v: string, what: string): number {
+  const t = v
+    .trim()
+    .replace(/\s*sats?$/i, '')
+    .replaceAll('_', '');
+  if (!/^\d{1,15}$/.test(t))
+    throw new Error(`${what}: enter a whole number of sats like 100`);
+  return Number(t);
+}
+
+export function satLimitWarnings(l: SatLimits): string[] {
+  const out: string[] = [];
+  if (l.perTx === 0 || l.perDay === 0 || l.perMonth === 0)
+    out.push('a limit of 0 sat blocks every Cashu payment');
+  if (l.perTx > l.perDay)
+    out.push('one sat payment is capped by the daily sat limit anyway');
+  if (l.perDay > l.perMonth)
+    out.push('the daily sat limit is capped by the monthly one');
+  if (l.threshold >= l.perTx)
+    out.push(
+      `the sat ${LAYOUT.auth} threshold is above the per-payment sat limit`,
+    );
+  if (l.maxBalance < l.perTx)
+    out.push(
+      'the wallet may hold less than one payment (max balance below the per-payment limit)',
+    );
+  return out;
+}
+
+// Ecash is bearer money: over plain http anyone on the path could take it.
+export function mintUrlWarnings(url: string): string[] {
+  const u = new URL(url);
+  const loopback = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
+  return u.protocol === 'http:' && !loopback
+    ? [
+        'uses plain http: ecash sent to it can be read and taken on the way; use https',
+      ]
+    : [];
+}
+
+// Ask the mint what it supports: sat ecash, and P2PK (NUT-11) so tokens can be
+// locked to a merchant key. Returns problems; empty means it looks usable.
+export async function checkCashuMint(
+  url: string,
+  fetchFn?: Fetch,
+): Promise<string[]> {
+  const c = createMintClient(url, {
+    timeoutMs: 8000,
+    ...(fetchFn === undefined ? {} : { fetch: fetchFn }),
+  });
+  try {
+    const [info, keysets] = await Promise.all([c.info(), c.keysets()]);
+    const out: string[] = [];
+    if (!keysets.some((k) => k.unit === 'sat' && k.active))
+      out.push('has no active sat keyset');
+    const nut = (n: string) => {
+      const v = info.nuts[n];
+      return isRecord(v) && v['supported'] === true;
+    };
+    if (!nut('10') || !nut('11'))
+      out.push(
+        'does not support P2PK (NUT-10/11), so only unlocked payments bursar delivers itself will work',
+      );
+    if (!nut('9'))
+      out.push(
+        'does not support restore (NUT-09), so a lost answer cannot be recovered',
+      );
+    return out;
+  } catch (e) {
+    return [`is unreachable (${(e as Error).message})`];
+  }
+}
+
 export function buildPolicyYaml(
-  a: Pick<Answers, 'network' | 'limits'>,
+  a: Pick<Answers, 'network' | 'limits'> & { cashu?: CashuAnswers | null },
   token: string,
   layout: Layout = LAYOUT,
 ): string {
   const n = NETWORKS[a.network];
   const l = a.limits;
+  const cs = a.cashu ?? null;
+  const sat = (k: keyof SatLimits) =>
+    cs === null ? '' : `, sat: ${cs.limits[k]}`;
+  const cashuChain = cs === null ? '' : ", 'cashu:sat'";
+  const cashuSection =
+    cs === null
+      ? ''
+      : `
+# Cashu ecash (NUT-24 X-Cashu): paid in sats from this mint, under the sat
+# limits above (never converted to or from USD). Fund it with:
+#   bursar cashu fund --mint ${cs.mint} --amount <sats>
+cashu:
+  mints:
+    - { url: '${cs.mint}', units: [sat], max_balance: ${cs.limits.maxBalance} }
+  max_fee: { sat: 10 }
+`;
   // Forward slashes work on Windows too and need no quoting in YAML.
   const stateDir = layout.state.replaceAll('\\', '/');
   return `# Written by bursar setup on ${new Date().toISOString().slice(0, 10)}.
@@ -214,24 +336,24 @@ agents:
     token: '${token}'
 
 limits:
-  per_tx: { usd: ${l.perTx} }
-  per_day: { usd: ${l.perDay}, window: calendar_utc }
-  per_recipient_day: { usd: ${l.perDay} }
+  per_tx: { usd: ${l.perTx}${sat('perTx')} }
+  per_day: { usd: ${l.perDay}${sat('perDay')}, window: calendar_utc }
+  per_recipient_day: { usd: ${l.perDay}${sat('perDay')} }
   velocity: { max_tx: ${l.maxTxPerMinute}, per_seconds: 60 }
-  wallet_per_day: { usd: ${l.perDay} }
-  per_month: { usd: ${l.perMonth} }
-  per_task: { max_usd: ${l.perDay}, max_ttl_seconds: 3600 }
+  wallet_per_day: { usd: ${l.perDay}${sat('perDay')} }
+  per_month: { usd: ${l.perMonth}${sat('perMonth')} }
+  per_task: { max_usd: ${l.perDay}${cs === null ? '' : `, max_sat: ${cs.limits.perDay}`}, max_ttl_seconds: 3600 }
   approval_threshold:
-    { usd: ${l.threshold}, timeout_seconds: 600, method: passkey, user_verification: required }
+    { usd: ${l.threshold}${sat('threshold')}, timeout_seconds: 600, method: passkey, user_verification: required }
 
 allow:
-  chains: ['${n.chain}']
+  chains: ['${n.chain}'${cashuChain}]
   assets:
     - { address: '${n.usdc}', chains: ['${n.chain}'], label: ${n.label} }
   # Services are added from the passkey page the first time an agent pays them.
   recipients: []
   unknown_recipients: ask
-
+${cashuSection}
 state:
   dir: ${stateDir}
 
@@ -610,6 +732,7 @@ async function collect(flags: Flags): Promise<Answers> {
   // stderr, so notes never end up in a policy printed with --print-policy
   for (const w of limitWarnings(limits))
     process.stderr.write(`${c.yellow(`  note: ${w}`)}\n`);
+  const cashu = await collectCashu(flags, network, preset);
   const claude = has('claude');
   const connectClaude =
     !flags.skipClaude &&
@@ -617,13 +740,79 @@ async function collect(flags: Flags): Promise<Answers> {
     (flags.yes || (await confirm('Connect Claude Code?', true)));
   if (!claude && !flags.skipClaude)
     say(c.dim('  Claude Code (claude) not found; skipping that step.'));
-  return { network, limits, connectClaude };
+  return { network, limits, cashu, connectClaude };
+}
+
+async function collectCashu(
+  flags: Flags,
+  network: Network,
+  preset: 'careful' | 'normal' | 'custom',
+): Promise<CashuAnswers | null> {
+  if (flags.noCashu) return null;
+  let mint = flags.cashuMint;
+  if (mint === undefined) {
+    if (flags.yes) return null;
+    const want = await confirm(
+      'Also pay with Cashu ecash (sats from a mint you choose, with separate sat limits)?',
+      false,
+    );
+    if (!want) return null;
+    for (;;) {
+      const typed = await input(
+        'Mint URL',
+        network === 'testnet' ? TEST_MINT : 'https://',
+      );
+      try {
+        mint = normalizeMintUrl(typed);
+        break;
+      } catch {
+        say(c.red('  enter the mint address, like https://mint.example.com'));
+      }
+    }
+  }
+  const problems = [...mintUrlWarnings(mint), ...(await checkCashuMint(mint))];
+  for (const p of problems)
+    process.stderr.write(`${c.yellow(`  note: ${mint} ${p}`)}\n`);
+  if (problems.length > 0 && !flags.yes && flags.cashuMint === undefined) {
+    if (!(await confirm('Use this mint anyway?', false))) return null;
+  }
+  const limits: SatLimits = {
+    ...SAT_PRESETS[preset === 'custom' ? 'careful' : preset],
+  };
+  const sats = async (question: string, def: number): Promise<number> => {
+    for (;;) {
+      try {
+        return checkSat(await input(question, String(def)), 'amount');
+      } catch (e) {
+        say(c.red(`  ${(e as Error).message}`));
+      }
+    }
+  };
+  if (preset === 'custom') {
+    limits.perTx = await sats('Max per Cashu payment, sat', limits.perTx);
+    limits.perDay = await sats('Max Cashu per day, sat', limits.perDay);
+    limits.perMonth = await sats('Max Cashu per month, sat', limits.perMonth);
+    limits.maxBalance = await sats(
+      'Most ecash to keep at the mint, sat',
+      limits.maxBalance,
+    );
+  }
+  if (!flags.yes)
+    limits.threshold = await sats(
+      `Ask ${LAYOUT.auth} for Cashu payments above, sat`,
+      limits.threshold,
+    );
+  for (const w of satLimitWarnings(limits))
+    process.stderr.write(`${c.yellow(`  note: ${w}`)}\n`);
+  return { mint, limits };
 }
 
 type Flags = {
   network?: Network;
   limits?: 'careful' | 'normal';
   threshold?: string;
+  cashuMint?: string;
+  noCashu: boolean;
   skipClaude: boolean;
   skipPasskey: boolean;
   yes: boolean;
@@ -637,6 +826,8 @@ const USAGE = `npm run setup [-- options]
   --network testnet|mainnet   skip the network question
   --limits careful|normal     skip the limits question
   --threshold <usd>           ask your passkey above this amount
+  --cashu-mint <url>          also pay with Cashu ecash from this mint (sat limits follow --limits)
+  --no-cashu                  skip the Cashu question
   --keep-policy               only update the installed code
   --no-claude                 do not touch Claude Code
   --no-passkey                skip passkey registration (servers without a browser; run bursar passkey add later)
@@ -652,6 +843,8 @@ function parseFlags(argv: string[]): Flags {
       network: { type: 'string' },
       limits: { type: 'string' },
       threshold: { type: 'string' },
+      'cashu-mint': { type: 'string' },
+      'no-cashu': { type: 'boolean' },
       'no-claude': { type: 'boolean' },
       'no-passkey': { type: 'boolean' },
       'keep-policy': { type: 'boolean' },
@@ -672,6 +865,7 @@ function parseFlags(argv: string[]): Flags {
   if (lim !== undefined && lim !== 'careful' && lim !== 'normal')
     throw new Error('--limits must be careful or normal');
   const f: Flags = {
+    noCashu: values['no-cashu'] ?? false,
     skipClaude: values['no-claude'] ?? false,
     skipPasskey: values['no-passkey'] ?? false,
     yes: values.yes ?? false,
@@ -682,6 +876,16 @@ function parseFlags(argv: string[]): Flags {
   if (net !== undefined) f.network = net;
   if (lim !== undefined) f.limits = lim;
   if (values.threshold !== undefined) f.threshold = values.threshold;
+  const mint = values['cashu-mint'];
+  if (mint !== undefined) {
+    try {
+      f.cashuMint = normalizeMintUrl(mint);
+    } catch {
+      throw new Error('--cashu-mint must be an http(s) URL');
+    }
+    if (f.noCashu)
+      throw new Error('--cashu-mint and --no-cashu contradict each other');
+  }
   if (f.yes) {
     f.network ??= 'testnet';
     f.limits ??= 'careful';
@@ -763,6 +967,13 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     say(
       `    approval  ${LAYOUT.auth} above $${l.threshold}, and for every new service`,
     );
+    if (answers.cashu !== null) {
+      const s = answers.cashu.limits;
+      say(`    cashu     ${answers.cashu.mint}`);
+      say(
+        `              ${s.perTx} sat per payment · ${s.perDay} sat/day · ${s.perMonth} sat/month · ${LAYOUT.auth} above ${s.threshold} sat`,
+      );
+    }
     say(`    Claude    ${answers.connectClaude ? 'connect' : 'skip'}`);
   }
   if (
@@ -917,6 +1128,17 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
     );
     say(
       '  Compare the first and last 6 characters of the address before you send.',
+    );
+  }
+  if (answers?.cashu) {
+    const m = answers.cashu.mint;
+    say(
+      `  Cashu: mint ecash by paying a lightning invoice from your own wallet${m === TEST_MINT ? ' (the test mint pays it by itself)' : ''}:`,
+    );
+    say(
+      c.bold(
+        `    bursar cashu fund --mint ${m} --amount ${answers.cashu.limits.perDay}`,
+      ),
     );
   }
   if (network !== null) {

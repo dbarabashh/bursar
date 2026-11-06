@@ -1,9 +1,15 @@
-import type { Policy, RecipientRule } from '../config.ts';
+import { currencyOfChain, type Policy, type RecipientRule } from '../config.ts';
 import type { PaymentIntent } from '../intent.ts';
-import { stablecoinUnitsToMicroUsd } from '../util.ts';
 import { checkAllowlist, findAsset } from './allowlist.ts';
-import { checkLimits, type LedgerSnapshot } from './limits.ts';
+import {
+  budgetFor,
+  checkLimits,
+  toBudgetUnits,
+  type LedgerSnapshot,
+} from './limits.ts';
 
+// `usd` and `feeUsd` are in the payment's budget units: micro-dollars, or
+// satoshis on cashu:sat (see currencyOfChain). Never converted between them.
 export type Decision =
   | { kind: 'allow'; usd: bigint; feeUsd: bigint }
   | {
@@ -21,51 +27,80 @@ export type EvaluateOptions = {
   learned?: readonly RecipientRule[];
 };
 
+const deny = (reason: string, usd: bigint | null = null): Decision => ({
+  kind: 'deny',
+  reason,
+  usd,
+});
+
+// The most a payment may add in network or mint fees; null: no fee allowed.
+function maxFee(policy: Policy, intent: PaymentIntent): bigint | null {
+  switch (intent.protocol) {
+    case 'mpp':
+      return policy.tempo.maxFeeUsd;
+    case 'cashu':
+      return policy.cashu?.maxFee[currencyOfChain(intent.chain)] ?? null;
+    default:
+      return null;
+  }
+}
+
 export function evaluate(
   policy: Policy,
   intent: PaymentIntent,
   snap: LedgerSnapshot,
   opts: EvaluateOptions,
 ): Decision {
+  const currency = currencyOfChain(intent.chain);
   const allow = checkAllowlist(policy, intent, opts.learned ?? []);
-  if (!allow.ok) return { kind: 'deny', reason: allow.reason, usd: null };
-  if (intent.amount <= 0n)
-    return { kind: 'deny', reason: 'amount_invalid', usd: null };
+  if (!allow.ok) return deny(allow.reason);
+  const budget = budgetFor(policy, currency);
+  if (budget === null) return deny('unit_not_allowed');
+  if (intent.amount <= 0n) return deny('amount_invalid');
   if (intent.decimals !== allow.asset.decimals)
-    return { kind: 'deny', reason: 'decimals_mismatch', usd: null };
+    return deny('decimals_mismatch');
   if (intent.memo !== undefined && intent.memo.length !== 32)
-    return { kind: 'deny', reason: 'memo_invalid', usd: null };
-  if (policy.requireResourceHash && intent.resourceHash === undefined) {
-    return { kind: 'deny', reason: 'resource_hash_required', usd: null };
-  }
-  let feeUsd = 0n;
+    return deny('memo_invalid');
+  if (policy.requireResourceHash && intent.resourceHash === undefined)
+    return deny('resource_hash_required');
+  let fee = 0n;
   if (intent.fee !== undefined) {
     const feeAsset = findAsset(policy, intent.chain, intent.fee.asset);
-    if (!feeAsset)
-      return { kind: 'deny', reason: 'fee_asset_not_allowed', usd: null };
+    if (!feeAsset) return deny('fee_asset_not_allowed');
     if (intent.fee.decimals !== feeAsset.decimals)
-      return { kind: 'deny', reason: 'decimals_mismatch', usd: null };
-    feeUsd = stablecoinUnitsToMicroUsd(intent.fee.amount, feeAsset.decimals);
-    if (intent.protocol !== 'mpp' || feeUsd > policy.tempo.maxFeeUsd)
-      return { kind: 'deny', reason: 'network_fee_too_high', usd: null };
+      return deny('decimals_mismatch');
+    fee = toBudgetUnits(currency, intent.fee.amount, feeAsset.decimals);
+    const cap = maxFee(policy, intent);
+    if (cap === null || fee > cap) return deny('network_fee_too_high');
   }
-  const amountUsd = stablecoinUnitsToMicroUsd(
-    intent.amount,
-    allow.asset.decimals,
-  );
-  const usd = amountUsd + feeUsd;
+  const amount = toBudgetUnits(currency, intent.amount, allow.asset.decimals);
+  const total = amount + fee;
   const limitReason = checkLimits(
     policy,
-    usd,
-    amountUsd,
+    budget,
+    total,
+    amount,
     allow.recipient,
     snap,
   );
-  if (limitReason !== null) return { kind: 'deny', reason: limitReason, usd };
+  if (limitReason !== null) return deny(limitReason, total);
   if (allow.unknown && !opts.approved)
-    return { kind: 'require_approval', usd, feeUsd, reason: 'new_recipient' };
-  const approval = policy.limits.approval;
-  if (approval !== null && usd > approval.threshold && !opts.approved)
-    return { kind: 'require_approval', usd, feeUsd, reason: 'threshold' };
-  return { kind: 'allow', usd, feeUsd };
+    return {
+      kind: 'require_approval',
+      usd: total,
+      feeUsd: fee,
+      reason: 'new_recipient',
+    };
+  if (
+    budget.approvalThreshold !== null &&
+    total > budget.approvalThreshold &&
+    !opts.approved
+  )
+    return {
+      kind: 'require_approval',
+      usd: total,
+      feeUsd: fee,
+      reason: 'threshold',
+    };
+  return { kind: 'allow', usd: total, feeUsd: fee };
 }

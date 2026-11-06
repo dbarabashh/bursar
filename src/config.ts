@@ -18,10 +18,40 @@ export type RecipientRule = {
   address: string;
   label: string | null;
   maxUsdDay: bigint | null;
+  maxSatDay: bigint | null;
   chains: string[] | null;
 };
 
 export type AgentRule = { id: string; tokenHash: Uint8Array };
+
+// Limits in satoshis. They apply only to payments denominated in sat (Cashu
+// unit "sat") and are never converted to or from USD: bursar does not price
+// anything. Absent `sat` keys mean sat payments are refused.
+export type SatLimits = {
+  perTx: bigint;
+  perDay: bigint;
+  perRecipientDay: bigint | null;
+  walletPerDay: bigint | null;
+  perMonth: bigint | null;
+  perTaskMax: bigint;
+  approvalThreshold: bigint | null;
+};
+
+export type CashuUnit = 'sat' | 'usd';
+
+export type CashuMintRule = {
+  url: string;
+  units: CashuUnit[];
+  label: string | null;
+  maxBalance: bigint | null;
+};
+
+export type CashuPolicy = {
+  mints: CashuMintRule[];
+  maxFee: { sat: bigint; usd: bigint };
+  allowHttp: boolean;
+  deliveryTimeoutSeconds: number;
+};
 
 export type Policy = {
   version: 1;
@@ -43,7 +73,9 @@ export type Policy = {
       method: 'cli' | 'passkey';
       userVerification: 'required' | 'preferred';
     } | null;
+    sat: SatLimits | null;
   };
+  cashu: CashuPolicy | null;
   allow: {
     chains: string[];
     assets: AssetRule[];
@@ -220,8 +252,128 @@ function expandPath(p: string, baseDir: string): string {
   return isAbsolute(p) ? p : resolve(baseDir, p);
 }
 
+// Recipients come in four shapes: EVM addresses (0x…, case-insensitive),
+// Solana addresses (base58, case-sensitive), Cashu P2PK keys and the https
+// origin a Cashu payment is delivered to. NUT-11 compares keys by their
+// x-coordinate only, so 02…/03… keys and x-only keys collapse to one form.
 export function normalizeAddress(a: string): string {
-  return /^0x[0-9a-fA-F]+$/.test(a) ? a.toLowerCase() : a;
+  if (/^0x[0-9a-fA-F]+$/.test(a)) return a.toLowerCase();
+  if (/^0[23][0-9a-fA-F]{64}$/.test(a)) return a.slice(2).toLowerCase();
+  if (/^[0-9a-fA-F]{64}$/.test(a)) return a.toLowerCase();
+  if (/^https?:\/\//i.test(a)) {
+    try {
+      return new URL(a).origin;
+    } catch {
+      return a;
+    }
+  }
+  return a;
+}
+
+// Mint URLs are compared without a trailing slash (NUT-00).
+export function normalizeMintUrl(u: string): string {
+  const url = new URL(u);
+  if (url.protocol !== 'https:' && url.protocol !== 'http:')
+    throw new Error(`mint URL must be http(s): ${u}`);
+  url.hash = '';
+  url.search = '';
+  return url.href.replace(/\/+$/, '');
+}
+
+export function isCashuChain(
+  chain: string,
+): chain is 'cashu:sat' | 'cashu:usd' {
+  return chain === 'cashu:sat' || chain === 'cashu:usd';
+}
+
+export type Currency = CashuUnit;
+
+export function currencyOfChain(chain: string): Currency {
+  return chain === 'cashu:sat' ? 'sat' : 'usd';
+}
+
+// Base units of Cashu amounts: cents for usd (NUT-01 minor unit), sats.
+export const CASHU_DECIMALS: Record<CashuUnit, number> = { usd: 2, sat: 0 };
+
+export function findMintRule(
+  cashu: CashuPolicy | null,
+  mintUrl: string,
+  unit: string,
+): CashuMintRule | undefined {
+  let url: string;
+  try {
+    url = normalizeMintUrl(mintUrl);
+  } catch {
+    return undefined;
+  }
+  return cashu?.mints.find(
+    (m) => m.url === url && (m.units as string[]).includes(unit),
+  );
+}
+
+function parseCashu(input: unknown): CashuPolicy | null {
+  const o = optObj(input, 'cashu', [
+    'mints',
+    'max_fee',
+    'allow_http',
+    'delivery_timeout_seconds',
+  ]);
+  if (o === null) return null;
+  const seen = new Set<string>();
+  const mints = list(o['mints'], 'cashu.mints').map((m, i) => {
+    const path = `cashu.mints[${i}]`;
+    const r = obj(m, path, ['url', 'units', 'label', 'max_balance']);
+    let url: string;
+    try {
+      url = normalizeMintUrl(str(r['url'], `${path}.url`));
+    } catch (e) {
+      throw new PolicyError(`${path}.url: ${(e as Error).message}`);
+    }
+    if (seen.has(url)) throw new PolicyError(`${path}.url: duplicate mint`);
+    seen.add(url);
+    const units = list(r['units'] ?? ['sat'], `${path}.units`).map((u, j) => {
+      if (u !== 'sat' && u !== 'usd')
+        throw new PolicyError(
+          `${path}.units[${j}]: only sat and usd are supported`,
+        );
+      return u as CashuUnit;
+    });
+    if (units.length === 0)
+      throw new PolicyError(`${path}.units: at least one unit is required`);
+    return {
+      url,
+      units,
+      label: optStr(r['label'], `${path}.label`),
+      maxBalance:
+        r['max_balance'] === undefined
+          ? null
+          : parseUint(r['max_balance'], `${path}.max_balance`),
+    };
+  });
+  if (mints.length === 0)
+    throw new PolicyError('cashu.mints: at least one mint is required');
+  const fee = optObj(o['max_fee'], 'cashu.max_fee', ['sat', 'usd']) ?? {};
+  return {
+    mints,
+    maxFee: {
+      sat:
+        fee['sat'] === undefined
+          ? 10n
+          : parseUint(fee['sat'], 'cashu.max_fee.sat'),
+      usd:
+        fee['usd'] === undefined
+          ? 20_000n
+          : parseUsd(fee['usd'], 'cashu.max_fee.usd'),
+    },
+    allowHttp: bool(o['allow_http'], 'cashu.allow_http', false),
+    deliveryTimeoutSeconds:
+      o['delivery_timeout_seconds'] === undefined
+        ? 30
+        : posInt(
+            o['delivery_timeout_seconds'],
+            'cashu.delivery_timeout_seconds',
+          ),
+  };
 }
 
 function buildPolicy(input: unknown, baseDir: string): Policy {
@@ -238,6 +390,7 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
     'state',
     'require_resource_hash',
     'tempo',
+    'cashu',
   ]);
   if (root['version'] !== '1' && root['version'] !== 1)
     throw new PolicyError('version: only version 1 is supported');
@@ -285,8 +438,12 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
     'per_task',
     'approval_threshold',
   ]);
-  const perTx = obj(lim['per_tx'], 'limits.per_tx', ['usd']);
-  const perDay = obj(lim['per_day'], 'limits.per_day', ['usd', 'window']);
+  const perTx = obj(lim['per_tx'], 'limits.per_tx', ['usd', 'sat']);
+  const perDay = obj(lim['per_day'], 'limits.per_day', [
+    'usd',
+    'sat',
+    'window',
+  ]);
   const windowIn = perDay['window'] ?? 'calendar_utc';
   if (windowIn !== 'calendar_utc' && windowIn !== 'rolling_24h') {
     throw new PolicyError(
@@ -299,9 +456,17 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
   ]);
   const prd = optObj(lim['per_recipient_day'], 'limits.per_recipient_day', [
     'usd',
+    'sat',
   ]);
-  const wpd = optObj(lim['wallet_per_day'], 'limits.wallet_per_day', ['usd']);
-  const pm = optObj(lim['per_month'], 'limits.per_month', ['usd', 'window']);
+  const wpd = optObj(lim['wallet_per_day'], 'limits.wallet_per_day', [
+    'usd',
+    'sat',
+  ]);
+  const pm = optObj(lim['per_month'], 'limits.per_month', [
+    'usd',
+    'sat',
+    'window',
+  ]);
   const pmWindow = pm?.['window'] ?? 'calendar_utc';
   if (pmWindow !== 'calendar_utc' && pmWindow !== 'rolling_30d')
     throw new PolicyError(
@@ -310,11 +475,13 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
   const pt =
     optObj(lim['per_task'], 'limits.per_task', [
       'max_usd',
+      'max_sat',
       'max_ttl_seconds',
       'required',
     ]) ?? {};
   const appr = optObj(lim['approval_threshold'], 'limits.approval_threshold', [
     'usd',
+    'sat',
     'timeout_seconds',
     'method',
     'user_verification',
@@ -340,15 +507,21 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
           perSeconds: posInt(vel['per_seconds'], 'limits.velocity.per_seconds'),
         }
       : null,
-    perRecipientDay: prd
-      ? parseUsd(prd['usd'], 'limits.per_recipient_day.usd')
-      : null,
-    walletPerDay: wpd
-      ? parseUsd(wpd['usd'], 'limits.wallet_per_day.usd')
-      : null,
-    perMonth: pm
-      ? { usd: parseUsd(pm['usd'], 'limits.per_month.usd'), window: pmWindow }
-      : null,
+    perRecipientDay:
+      prd && prd['usd'] !== undefined
+        ? parseUsd(prd['usd'], 'limits.per_recipient_day.usd')
+        : null,
+    walletPerDay:
+      wpd && wpd['usd'] !== undefined
+        ? parseUsd(wpd['usd'], 'limits.wallet_per_day.usd')
+        : null,
+    perMonth:
+      pm && pm['usd'] !== undefined
+        ? {
+            usd: parseUsd(pm['usd'], 'limits.per_month.usd'),
+            window: pmWindow,
+          }
+        : null,
     perTask: {
       maxUsd:
         pt['max_usd'] === undefined
@@ -374,7 +547,60 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
           userVerification,
         }
       : null,
+    sat: null,
   };
+  if (perTx['sat'] !== undefined) {
+    if (perDay['sat'] === undefined)
+      throw new PolicyError(
+        'limits.per_day.sat: required when limits.per_tx.sat is set',
+      );
+    if (appr !== null && appr['sat'] === undefined)
+      throw new PolicyError(
+        'limits.approval_threshold.sat: required when limits.per_tx.sat is set, so sat payments cannot skip the approval threshold',
+      );
+    const perDaySat = parseUint(perDay['sat'], 'limits.per_day.sat');
+    limits.sat = {
+      perTx: parseUint(perTx['sat'], 'limits.per_tx.sat'),
+      perDay: perDaySat,
+      perRecipientDay:
+        prd?.['sat'] === undefined
+          ? null
+          : parseUint(prd['sat'], 'limits.per_recipient_day.sat'),
+      walletPerDay:
+        wpd?.['sat'] === undefined
+          ? null
+          : parseUint(wpd['sat'], 'limits.wallet_per_day.sat'),
+      perMonth:
+        pm?.['sat'] === undefined
+          ? null
+          : parseUint(pm['sat'], 'limits.per_month.sat'),
+      perTaskMax:
+        pt['max_sat'] === undefined
+          ? perDaySat
+          : parseUint(pt['max_sat'], 'limits.per_task.max_sat'),
+      approvalThreshold:
+        appr === null
+          ? null
+          : parseUint(appr['sat'], 'limits.approval_threshold.sat'),
+    };
+  } else {
+    for (const [o, path] of [
+      [perDay, 'limits.per_day'],
+      [prd, 'limits.per_recipient_day'],
+      [wpd, 'limits.wallet_per_day'],
+      [pm, 'limits.per_month'],
+      [appr, 'limits.approval_threshold'],
+    ] as const) {
+      if (o?.['sat'] !== undefined)
+        throw new PolicyError(
+          `${path}.sat: set limits.per_tx.sat first; sat limits are off without it`,
+        );
+    }
+    if (pt['max_sat'] !== undefined)
+      throw new PolicyError(
+        'limits.per_task.max_sat: set limits.per_tx.sat first; sat limits are off without it',
+      );
+  }
 
   const allowIn = obj(root['allow'], 'allow', [
     'chains',
@@ -430,7 +656,13 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
   } else {
     recipients = list(allowIn['recipients'], 'allow.recipients').map((r, i) => {
       const path = `allow.recipients[${i}]`;
-      const o = obj(r, path, ['address', 'label', 'max_usd_day', 'chains']);
+      const o = obj(r, path, [
+        'address',
+        'label',
+        'max_usd_day',
+        'max_sat_day',
+        'chains',
+      ]);
       return {
         address: normalizeAddress(str(o['address'], `${path}.address`)),
         label: optStr(o['label'], `${path}.label`),
@@ -438,6 +670,10 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
           o['max_usd_day'] === undefined
             ? null
             : parseUsd(o['max_usd_day'], `${path}.max_usd_day`),
+        maxSatDay:
+          o['max_sat_day'] === undefined
+            ? null
+            : parseUint(o['max_sat_day'], `${path}.max_sat_day`),
         chains: chainList(o['chains'], `${path}.chains`),
       };
     });
@@ -534,6 +770,24 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
   if (mode !== 'enforce' && mode !== 'dry_run')
     throw new PolicyError('mode: expected enforce or dry_run');
 
+  const cashu = parseCashu(root['cashu']);
+  for (const chain of chains) {
+    if (!chain.startsWith('cashu:')) continue;
+    if (!isCashuChain(chain))
+      throw new PolicyError(
+        `allow.chains: ${chain} is not supported; Cashu chains are cashu:sat and cashu:usd`,
+      );
+    const unit = chain.slice('cashu:'.length) as CashuUnit;
+    if (cashu === null || !cashu.mints.some((m) => m.units.includes(unit)))
+      throw new PolicyError(
+        `allow.chains: ${chain} needs a cashu.mints entry with unit ${unit}`,
+      );
+    if (unit === 'sat' && limits.sat === null)
+      throw new PolicyError(
+        'allow.chains: cashu:sat needs sat limits (limits.per_tx.sat, limits.per_day.sat)',
+      );
+  }
+
   return {
     version: 1,
     baseDir,
@@ -556,6 +810,7 @@ function buildPolicy(input: unknown, baseDir: string): Policy {
       maxNetworkFeeWei,
     },
     tempo,
+    cashu,
     rpc,
     server,
     state: {

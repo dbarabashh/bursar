@@ -1,9 +1,11 @@
 import { bytesToHex } from '@noble/hashes/utils.js';
 import { sha256Hex } from './util.ts';
 
-export type Protocol = 'x402' | 'mpp' | 'evm';
+import type { CashuPlan } from './protocols/cashu.ts';
 
-export const PROTOCOLS: readonly Protocol[] = ['x402', 'mpp', 'evm'];
+export type Protocol = 'x402' | 'mpp' | 'evm' | 'cashu';
+
+export const PROTOCOLS: readonly Protocol[] = ['x402', 'mpp', 'evm', 'cashu'];
 
 export type PaymentIntent = {
   protocol: Protocol;
@@ -104,7 +106,12 @@ export type TempoFeePlan = {
   maxPriorityFeePerGas: bigint;
 };
 
-export type SignPlan = X402EvmPlan | X402SvmPlan | EvmTxPlan | MppTempoPlan;
+export type SignPlan =
+  | X402EvmPlan
+  | X402SvmPlan
+  | EvmTxPlan
+  | MppTempoPlan
+  | CashuPlan;
 
 export const EMPTY_BODY_SHA256 = sha256Hex(new Uint8Array());
 

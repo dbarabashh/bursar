@@ -11,7 +11,9 @@ import {
   RP_ID,
   verifyAssertion,
 } from '../approval/passkey.ts';
-import { formatUsd, isRecord, stablecoinUnitsToMicroUsd } from '../util.ts';
+import { currencyOfChain } from '../config.ts';
+import { toBudgetUnits } from '../policy/limits.ts';
+import { formatUsd, isRecord } from '../util.ts';
 import { resolveApproval } from '../approval/resolve.ts';
 import type { HttpResult } from './server.ts';
 
@@ -37,7 +39,9 @@ function err(status: number, error: string): HttpResult {
   return { status, body: { status: 'error', error } };
 }
 
-function displayUsd(intent: Record<string, unknown>): string | null {
+// What the page shows as the amount, fee included: "$0.10", or "120 sat"
+// for Cashu payments in satoshis (never converted).
+function displayAmount(intent: Record<string, unknown>): string | null {
   const amount = intent['amount'];
   const decimals = intent['decimals'];
   if (
@@ -46,17 +50,17 @@ function displayUsd(intent: Record<string, unknown>): string | null {
     typeof decimals !== 'number'
   )
     return null;
-  let micro = stablecoinUnitsToMicroUsd(BigInt(amount), decimals);
+  const currency = currencyOfChain(String(intent['chain']));
+  let total = toBudgetUnits(currency, BigInt(amount), decimals);
   const fee = intent['fee'];
   if (
     isRecord(fee) &&
     typeof fee['amount'] === 'string' &&
     /^\d+$/.test(fee['amount']) &&
     typeof fee['decimals'] === 'number'
-  ) {
-    micro += stablecoinUnitsToMicroUsd(BigInt(fee['amount']), fee['decimals']);
-  }
-  return formatUsd(micro);
+  )
+    total += toBudgetUnits(currency, BigInt(fee['amount']), fee['decimals']);
+  return currency === 'sat' ? `${total} sat` : `$${formatUsd(total)}`;
 }
 
 async function readJson(req: IncomingMessage): Promise<unknown> {
@@ -108,7 +112,7 @@ export async function handleApprovalRoute(
         status: approval.status,
         expiresAt: approval.expiresAt,
         intent,
-        usd: displayUsd(intent),
+        amount: displayAmount(intent),
         pending: approval.status === 'pending' && now() < approval.expiresAt,
         newRecipient,
         resourceUrl: approval.context.resourceUrl,

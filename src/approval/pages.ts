@@ -87,7 +87,7 @@ export type ApprovalView = {
   status: string;
   expiresAt: number;
   intent: Record<string, unknown>;
-  usd: string | null;
+  amount: string | null;
   pending: boolean;
   newRecipient?: boolean;
   resourceUrl?: string | null;
@@ -112,9 +112,11 @@ export function approvalPage(
   const fresh = view.newRecipient === true;
   const title = fresh
     ? 'New service wants to be paid'
-    : `Approve $${view.usd ?? ''} payment`;
+    : `Approve ${view.amount ?? ''} payment`;
   const amount =
-    view.usd === null ? '' : `<p class="amount">$${escapeHtml(view.usd)}</p>`;
+    view.amount === null
+      ? ''
+      : `<p class="amount">${escapeHtml(view.amount)}</p>`;
   const header = fresh
     ? `<h1>${title}</h1>
 <p class="muted">Agent <b>${escapeHtml(view.agent)}</b> wants to pay a recipient that is not on your list yet.</p>

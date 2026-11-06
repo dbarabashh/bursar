@@ -8,6 +8,7 @@ Minimal local wallet for AI agents with spending limits, allowlists & passkey ap
 - The key never reaches the agent: a separate OS user, and no endpoint that signs arbitrary bytes
 - Minimal: 5 runtime dependencies, cryptography from audited [noble](https://paulmillr.com/noble/)
 - x402 (EVM & Solana) and raw ERC-20 transfers; MPP is checked against the policy, but its Tempo signer is not ready yet
+- Cashu ecash (NUT-24 `X-Cashu`): locked tokens for the merchant's key, or tokens bursar delivers itself to an allowlisted https origin; limits in sat, kept apart from USD
 - Per-tx, daily, monthly, per-recipient, per-task, wallet & velocity limits in plain YAML
 - Human approval with Touch ID and other passkeys
 - MCP server for Claude Code and other agents
@@ -106,6 +107,33 @@ sequenceDiagram
 - An agent tampering with the install or an update. The daemon never runs your own `node`: the installers download the official Node build pinned by SHA-256 (a Homebrew build would load libraries from folders your user can write every time the daemon starts). `npm run setup` hands the policy to the root installer on stdin, never through a file. The first install still runs code from your checkout, which your user (and so an agent) can change, so do it from a clean checkout (`git status`) while no agent is running; it records the repository and your git signing keys (`gpg.ssh.allowedSignersFile`) in root-owned `/etc/bursar`. After that, update with `sudo bursar-update`: it clones that repository into a root-only folder, refuses any commit not signed by those keys, and installs from there, so nothing your user can edit is involved. On Windows there is no `bursar-update` yet; update from a clean checkout as for the first install.
 - A compromised agent token. Whoever holds it can spend that agent's budget, within policy.
 - A malicious RPC endpoint. EVM simulation and Solana blockhash lookup trust the configured RPC.
+
+## Cashu (NUT-24)
+
+A server can answer `402` with `X-Cashu: creqA…` (or `creqB…`), asking for ecash in the retried request. bursar keeps the wallet: the proofs live in its ledger, owned by the daemon user, and only leave it as the token of a payment the policy allowed. Ecash is a bearer instrument and the request names no payee, so bursar decides who it pays from what controls the money:
+
+- **Locked** (`nut10` P2PK): the recipient is the merchant's public key, allowlisted like an address. Only that key can redeem the token, so bursar returns it in an `X-Cashu` header and the agent retries, as with x402. Locks that add another way to spend the token (`refund`, `locktime`, `pubkeys`, `n_sigs`) are refused, because the agent writes the payment request and could send the token back to itself that way. A mint that does not advertise NUT-10/11 is not used for locked payments: it would treat the lock as anyone-can-spend.
+- **Unlocked**: the recipient is the https origin of the resource, and bursar sends the request with the token itself (no redirects, configurable timeout) and returns the merchant's answer. The agent never holds unlocked ecash. If the merchant refuses or does not answer and the token is still unspent at the mint, bursar takes it back and only the mint fees of the round trip stay counted.
+
+Amounts in `sat` count against separate `sat` limits; amounts in `usd` (cents) against the usual USD limits. Mint input fees (both the swap and the receiver's, NUT-02/NUT-18) count as fees. Each payment is two-phase: the inputs are reserved and the outputs written to the ledger before the mint is asked, so a crash or a lost answer is settled from the ledger with NUT-09 restore and NUT-07 state checks, never by swapping twice.
+
+`npm run setup` asks whether to pay with Cashu too (or pass `--cashu-mint <url>`): it checks the mint, adds `cashu:sat` with sat limits (careful or normal, like the USD ones) and a `max_balance` for the mint to the policy, and ends with the `bursar cashu fund` command to run. On the testnet it suggests `https://testnut.cashu.space`, whose lightning is fake.
+
+The operator funds and empties the wallet from the CLI; none of this is reachable from the agent API:
+
+```sh
+bursar cashu fund --mint https://mint.example.com --amount 2000 --policy policy.yaml   # prints a lightning invoice to pay
+bursar cashu receive cashuB… --policy policy.yaml
+bursar cashu balance --policy policy.yaml
+bursar cashu withdraw lnbc… --mint https://mint.example.com --policy policy.yaml
+bursar cashu recover --policy policy.yaml   # settle withdrawals still in flight
+```
+
+A withdrawal whose lightning payment is still in flight keeps its ecash reserved until the mint says how it ended. The daemon asks every minute; `bursar cashu recover` asks now. A paid withdrawal gets its fee change back (NUT-09), a failed one gets its ecash back.
+
+The mint holds the money behind the ecash: it can refuse to redeem it or disappear. Keep `max_balance` per mint small. The ledger file is the wallet; losing it loses the ecash (proofs are not derived from a seed yet).
+
+`npm run sandbox:cashu` runs the whole flow locally: a Nutshell mint in Docker with a fake lightning backend, a NUT-24 merchant, the daemon, the CLI and an agent paying through the MCP `pay` tool.
 
 ## Quickstart
 

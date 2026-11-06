@@ -12,6 +12,9 @@ export type ReportRow = {
   count: number;
   usd: string;
   feeUsd: string;
+  // Cashu payments in satoshis; present only when there are any.
+  sat?: string;
+  feeSat?: string;
 };
 
 export type Report = {
@@ -20,6 +23,8 @@ export type Report = {
     payments: number;
     usd: string;
     feeUsd: string;
+    sat?: string;
+    feeSat?: string;
     denied: number;
     pendingApprovals: number;
   };
@@ -79,8 +84,14 @@ function row(g: SpendGroup, label: string | null): ReportRow {
     count: g.count,
     usd: formatUsd(g.usd),
     feeUsd: formatUsd(g.feeUsd),
+    ...(g.sat === 0n
+      ? {}
+      : { sat: g.sat.toString(), feeSat: g.feeSat.toString() }),
   };
 }
+
+const withSat = (usd: string, sat: string | undefined) =>
+  sat === undefined ? usd : `${usd} + ${sat} sat`;
 
 export function buildReport(
   deps: { policy: Policy; ledger: Ledger; audit: AuditLog; now: number },
@@ -134,6 +145,7 @@ export function buildReport(
 
   const sum = (gs: SpendGroup[], f: (g: SpendGroup) => bigint) =>
     gs.reduce((acc, g) => acc + f(g), 0n);
+  const satTotal = sum(agents, (g) => g.sat);
   return {
     period: {
       from: new Date(period.from).toISOString(),
@@ -144,6 +156,12 @@ export function buildReport(
       payments: agents.reduce((a, g) => a + g.count, 0),
       usd: formatUsd(sum(agents, (g) => g.usd)),
       feeUsd: formatUsd(sum(agents, (g) => g.feeUsd)),
+      ...(satTotal === 0n
+        ? {}
+        : {
+            sat: satTotal.toString(),
+            feeSat: sum(agents, (g) => g.feeSat).toString(),
+          }),
       denied: [...denials.values()].reduce((a, d) => a + d.count, 0),
       pendingApprovals: pending.length,
     },
@@ -189,7 +207,7 @@ function table(headers: string[], rows: string[][]): string {
 
 export function formatReport(r: Report): string {
   let out = `bursar spend report, ${r.period.label}: ${r.period.from} .. ${r.period.to}\n\n`;
-  out += `  payments ${r.totals.payments}   spent $${r.totals.usd} (network fees $${r.totals.feeUsd})   denied ${r.totals.denied}   pending approvals ${r.totals.pendingApprovals}\n`;
+  out += `  payments ${r.totals.payments}   spent $${r.totals.usd} (network fees $${r.totals.feeUsd})${r.totals.sat === undefined ? '' : ` + ${r.totals.sat} sat (mint fees ${r.totals.feeSat} sat)`}   denied ${r.totals.denied}   pending approvals ${r.totals.pendingApprovals}\n`;
   out += `  audit log: ${r.audit.entries} entries in period, hash chain ${r.audit.chainValid ? 'intact' : 'BROKEN - the log was modified'}\n\n`;
   out +=
     'By agent\n' +
@@ -198,8 +216,8 @@ export function formatReport(r: Report): string {
       r.byAgent.map((a) => [
         a.key,
         String(a.count),
-        a.usd,
-        a.feeUsd,
+        withSat(a.usd, a.sat),
+        withSat(a.feeUsd, a.feeSat),
         a.dayLimitUsd,
         a.monthLimitUsd ?? '-',
       ]),
@@ -208,7 +226,12 @@ export function formatReport(r: Report): string {
     '\nBy recipient\n' +
     table(
       ['recipient', 'label', 'payments', 'usd'],
-      r.byRecipient.map((x) => [x.key, x.label ?? '-', String(x.count), x.usd]),
+      r.byRecipient.map((x) => [
+        x.key,
+        x.label ?? '-',
+        String(x.count),
+        withSat(x.usd, x.sat),
+      ]),
     );
   out +=
     '\nBy task\n' +
@@ -219,7 +242,7 @@ export function formatReport(r: Report): string {
         t.label ?? '-',
         t.agent ?? '-',
         String(t.count),
-        t.usd,
+        withSat(t.usd, t.sat),
         t.budgetUsd ?? '-',
       ]),
     );

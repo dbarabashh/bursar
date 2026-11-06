@@ -22,6 +22,7 @@
     "setup": "node src/setup.ts",
     "sandbox": "node sandbox/run.ts",
     "sandbox:manual": "node sandbox/manual.ts",
+    "sandbox:cashu": "node sandbox/cashu.ts",
     "mcp": "node src/mcp/server.ts",
     "format": "oxfmt --write .",
     "format:check": "oxfmt --check ."

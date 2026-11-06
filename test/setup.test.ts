@@ -5,10 +5,17 @@ import { fileURLToPath } from 'node:url';
 import { join } from 'node:path';
 import { parsePolicy } from '../src/config.ts';
 import { parseUsd } from '../src/util.ts';
+import { fakeMint } from './fixtures/fake-mint.ts';
 import {
   balanceOfCall,
   buildPolicyYaml,
+  checkCashuMint,
+  checkSat,
   checkUsd,
+  mintUrlWarnings,
+  SAT_PRESETS,
+  satLimitWarnings,
+  TEST_MINT,
   cmdQuote,
   layoutFor,
   limitWarnings,
@@ -174,5 +181,125 @@ describe('setup: command line', () => {
     });
     assert.equal(r.status, 1);
     assert.match(r.stderr, /--network must be testnet or mainnet/);
+  });
+});
+
+describe('setup: cashu', () => {
+  it('adds cashu:sat, sat limits and the mint to the policy', () => {
+    const yaml = buildPolicyYaml(
+      {
+        network: 'testnet',
+        limits: PRESETS.careful,
+        cashu: { mint: TEST_MINT, limits: SAT_PRESETS.careful },
+      },
+      TOKEN,
+      layoutFor('darwin'),
+    );
+    const p = parsePolicy(yaml, { baseDir: '/var/db/bursar', env: {} });
+    const s = SAT_PRESETS.careful;
+    assert.deepEqual(p.allow.chains, [NETWORKS.testnet.chain, 'cashu:sat']);
+    assert.deepEqual(p.limits.sat, {
+      perTx: BigInt(s.perTx),
+      perDay: BigInt(s.perDay),
+      perRecipientDay: BigInt(s.perDay),
+      walletPerDay: BigInt(s.perDay),
+      perMonth: BigInt(s.perMonth),
+      perTaskMax: BigInt(s.perDay),
+      approvalThreshold: BigInt(s.threshold),
+    });
+    assert.deepEqual(p.cashu?.mints, [
+      {
+        url: TEST_MINT,
+        units: ['sat'],
+        label: null,
+        maxBalance: BigInt(s.maxBalance),
+      },
+    ]);
+    // USD limits are unchanged by the sat ones.
+    assert.equal(p.limits.perTx, parseUsd(PRESETS.careful.perTx, 't'));
+  });
+
+  it('leaves Cashu out when not chosen', () => {
+    const p = parsePolicy(
+      buildPolicyYaml(
+        { network: 'mainnet', limits: PRESETS.normal, cashu: null },
+        TOKEN,
+        layoutFor('linux'),
+      ),
+      { baseDir: '/', env: {} },
+    );
+    assert.equal(p.cashu, null);
+    assert.equal(p.limits.sat, null);
+  });
+
+  it('accepts whole sats only and warns about odd sat limits', () => {
+    assert.equal(checkSat('1_000 sat', 'x'), 1000);
+    assert.throws(() => checkSat('0.5', 'x'));
+    assert.deepEqual(satLimitWarnings(SAT_PRESETS.normal), []);
+    assert.ok(
+      satLimitWarnings({ ...SAT_PRESETS.careful, maxBalance: 10 }).some((w) =>
+        /max balance/.test(w),
+      ),
+    );
+  });
+
+  it('warns about a mint on plain http unless it is on this machine', () => {
+    assert.match(
+      mintUrlWarnings('http://mint.example.com').join(),
+      /plain http/,
+    );
+    assert.deepEqual(mintUrlWarnings('http://127.0.0.1:3338'), []);
+    assert.deepEqual(mintUrlWarnings('https://mint.example.com'), []);
+  });
+
+  it('checks the mint: usable, without P2PK, unreachable', async () => {
+    assert.deepEqual(
+      await checkCashuMint(TEST_MINT, fakeMint({ url: TEST_MINT }).fetch),
+      [],
+    );
+    const noLock = await checkCashuMint(
+      TEST_MINT,
+      fakeMint({ url: TEST_MINT, p2pk: false }).fetch,
+    );
+    assert.match(noLock.join(), /P2PK/);
+    const down = await checkCashuMint(TEST_MINT, async () => {
+      throw new Error('connect ECONNREFUSED');
+    });
+    assert.match(down.join(), /unreachable/);
+  });
+
+  it('--cashu-mint enables Cashu without questions', () => {
+    const r = spawnSync(
+      process.execPath,
+      [SETUP, '--print-policy', '--yes', '--cashu-mint', 'http://127.0.0.1:9/'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'], timeout: 30_000 },
+    );
+    assert.equal(r.status, 0, r.stderr);
+    assert.match(r.stderr, /unreachable/);
+    const p = parsePolicy(r.stdout, { baseDir: '/', env: {} });
+    assert.equal(p.cashu?.mints[0]?.url, 'http://127.0.0.1:9');
+    assert.equal(p.limits.sat?.perTx, BigInt(SAT_PRESETS.careful.perTx));
+  });
+
+  it('rejects a bad mint URL and contradicting flags', () => {
+    const bad = spawnSync(process.execPath, [SETUP, '--cashu-mint', 'mint'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    assert.match(bad.stderr, /--cashu-mint must be an http\(s\) URL/);
+    const both = spawnSync(
+      process.execPath,
+      [SETUP, '--cashu-mint', TEST_MINT, '--no-cashu'],
+      { encoding: 'utf8', stdio: ['ignore', 'pipe', 'pipe'] },
+    );
+    assert.match(both.stderr, /contradict/);
+  });
+
+  it('--yes alone does not turn Cashu on', () => {
+    const r = spawnSync(process.execPath, [SETUP, '--print-policy', '--yes'], {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'pipe'],
+    });
+    assert.equal(parsePolicy(r.stdout, { baseDir: '/', env: {} }).cashu, null);
   });
 });

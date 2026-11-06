@@ -24,10 +24,12 @@ export type AuditEvent = {
     | 'conflict'
     | 'task_opened'
     | 'recipient_added'
-    | 'recipient_removed';
+    | 'recipient_removed'
+    | 'refunded';
   idempotencyKey?: string;
   reason?: string;
   usd?: string;
+  sat?: string;
   intent?: Record<string, unknown>;
   approvalId?: string;
   txRef?: string;

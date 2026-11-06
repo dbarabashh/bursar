@@ -10,6 +10,10 @@ import { openSigner } from './signer/index.ts';
 import { generateKeyFile } from './signer/keystore.ts';
 import { startRegistration } from './approval/register.ts';
 import { buildReport, formatReport, periodFor } from './report.ts';
+import { createMintClient } from './cashu/mint.ts';
+import { createWallet, WalletError } from './cashu/wallet.ts';
+import { findMintRule } from './config.ts';
+import { randomBytes } from '@noble/hashes/utils.js';
 
 const USAGE = `bursar - policy-enforcing signing daemon for AI agents
 
@@ -25,6 +29,11 @@ Usage:
   bursar passkey list   --policy <file>
   bursar passkey remove <credentialId> --policy <file>
   bursar report    --policy <file> [--period day|month|all] [--since <iso>] [--until <iso>] [--json]
+  bursar cashu balance  --policy <file>
+  bursar cashu fund     --policy <file> --mint <url> --amount <n> [--unit sat|usd]
+  bursar cashu receive  <cashuB…> --policy <file>
+  bursar cashu withdraw <bolt11> --policy <file> --mint <url> [--unit sat|usd]
+  bursar cashu recover  --policy <file>
   bursar keygen    --out <file>
 `;
 
@@ -77,6 +86,130 @@ async function serve(policy: Policy, port: number | undefined): Promise<void> {
   };
   process.on('SIGINT', stop);
   process.on('SIGTERM', stop);
+  if (policy.cashu !== null) {
+    // Settle Cashu payments left in flight by a crash or a mint outage.
+    const sweep = () =>
+      app
+        .sweepCashu()
+        .catch((e: unknown) =>
+          process.stderr.write(`cashu sweep: ${(e as Error).message}\n`),
+        );
+    void sweep();
+    setInterval(sweep, 60_000).unref();
+  }
+}
+
+async function cashu(
+  policy: Policy,
+  sub: string | undefined,
+  arg: string | undefined,
+  v: {
+    mint?: string | undefined;
+    amount?: string | undefined;
+    unit?: string | undefined;
+  },
+): Promise<void> {
+  if (policy.cashu === null) fail('the policy has no cashu section');
+  const cfg = policy.cashu;
+  const ledger = new Ledger(policy.state.ledgerPath);
+  const wallet = createWallet({
+    ledger,
+    client: (m) => createMintClient(m),
+    random: randomBytes,
+    now: Date.now,
+  });
+  const unit = v.unit ?? 'sat';
+  if (unit !== 'sat' && unit !== 'usd') fail('--unit must be sat or usd');
+  const ruleFor = (mintUrl: string, u: string) => {
+    const r = findMintRule(cfg, mintUrl, u);
+    return r === undefined ? null : { url: r.url, maxBalance: r.maxBalance };
+  };
+  const needMint = () => {
+    if (v.mint === undefined) fail('--mint is required');
+    const r = ruleFor(v.mint, unit);
+    if (r === null) fail(`${v.mint} (${unit}) is not in cashu.mints`);
+    return r;
+  };
+  try {
+    switch (sub) {
+      case undefined:
+      case 'balance': {
+        const rows = ledger.cashuBalances();
+        if (rows.length === 0)
+          process.stdout.write('no ecash yet (bursar cashu fund …)\n');
+        for (const r of rows.filter((x) => x.state !== 'spent'))
+          process.stdout.write(
+            `${r.mint}  ${r.amount} ${r.unit}  ${r.state}  (${r.count} proofs)\n`,
+          );
+        const waiting = ledger.listOps('melt_pending');
+        if (waiting.length > 0)
+          process.stdout.write(
+            `${waiting.length} withdrawal(s) waiting for the mint; reserved ecash comes back or is settled by: bursar cashu recover\n`,
+          );
+        return;
+      }
+      case 'recover': {
+        // Settle withdrawals still in flight and operations whose answer was
+        // lost. The daemon does the same every minute.
+        const out = await wallet.sweep(0);
+        if (out.length === 0) process.stdout.write('nothing to recover\n');
+        const words: Record<string, string> = {
+          paid: 'paid; change is back in the wallet',
+          failed: 'failed; the ecash is back in the wallet',
+          ok: 'finished',
+          refused: 'not processed by the mint; the ecash is back in the wallet',
+          pending: 'still in flight at the mint; try again later',
+          unknown: 'the mint did not answer; try again later',
+        };
+        for (const r of out)
+          process.stdout.write(`${r.id}  ${words[r.outcome] ?? r.outcome}\n`);
+        return;
+      }
+      case 'fund': {
+        const m = needMint();
+        const amount = Number(v.amount);
+        if (!Number.isSafeInteger(amount) || amount <= 0)
+          fail('--amount must be a positive integer');
+        const q = await wallet.fundStart(m.url, unit, amount, m.maxBalance);
+        process.stdout.write(
+          `Pay this invoice from your own lightning wallet to mint ${amount} ${unit} at ${m.url}:\n\n  ${q.invoice}\n\nWaiting for the payment (up to 10 minutes)…\n`,
+        );
+        const got = await wallet.fundFinish(q.opId, {
+          timeoutMs: 10 * 60_000,
+          pollMs: 2000,
+          sleep: (ms) => new Promise((r) => setTimeout(r, ms)),
+        });
+        process.stdout.write(
+          `minted ${got} ${unit}; balance ${wallet.balance(m.url, unit)} ${unit}\n`,
+        );
+        return;
+      }
+      case 'receive': {
+        if (arg === undefined) fail('cashu receive needs a token');
+        const r = await wallet.receive(arg, (mint, u) => ruleFor(mint, u));
+        process.stdout.write(
+          `received ${r.amount} ${r.unit} at ${r.mint}; balance ${wallet.balance(r.mint, r.unit)} ${r.unit}\n`,
+        );
+        return;
+      }
+      case 'withdraw': {
+        if (arg === undefined) fail('cashu withdraw needs a bolt11 invoice');
+        const m = needMint();
+        const r = await wallet.withdraw(m.url, unit, arg);
+        process.stdout.write(
+          `paid ${r.amount} ${unit} (fees ${r.fee} ${unit}); balance ${wallet.balance(m.url, unit)} ${unit}\n`,
+        );
+        return;
+      }
+      default:
+        fail('usage: bursar cashu balance|fund|receive|withdraw|recover');
+    }
+  } catch (e) {
+    if (e instanceof WalletError) fail(e.message);
+    throw e;
+  } finally {
+    ledger.close();
+  }
 }
 
 async function main(): Promise<void> {
@@ -91,6 +224,9 @@ async function main(): Promise<void> {
       since: { type: 'string' },
       until: { type: 'string' },
       json: { type: 'boolean' },
+      mint: { type: 'string' },
+      amount: { type: 'string' },
+      unit: { type: 'string' },
       help: { type: 'boolean', short: 'h' },
     },
   });
@@ -297,6 +433,9 @@ async function main(): Promise<void> {
       }
       return;
     }
+    case 'cashu':
+      await cashu(policyFrom(values.policy), arg, arg2, values);
+      return;
     case 'setup':
       fail('run setup from the bursar repo as your own user: npm run setup');
     case 'keygen': {
