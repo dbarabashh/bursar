@@ -142,6 +142,13 @@ export function parseX402(
       : isRecord(resource) && typeof resource['url'] === 'string'
         ? resource['url']
         : null;
+  // When the agent says which resource it asked for, a 402 that names none
+  // cannot be checked against it, so it is refused rather than signed.
+  if (ctx.resource !== null && resourceUrl === null)
+    throw new AdapterError(
+      'resource_hash_mismatch',
+      'payment requirements name no resource',
+    );
   const resourceHash = bindResource(ctx, resourceUrl);
   const extra = isRecord(req['extra']) ? req['extra'] : {};
 

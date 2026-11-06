@@ -6,6 +6,7 @@ import { createApp, type App } from '../src/api/server.ts';
 import { AuditLog } from '../src/audit.ts';
 import { parsePolicy, type Policy } from '../src/config.ts';
 import { Ledger } from '../src/ledger/store.ts';
+import type { AdapterContext } from '../src/protocols/common.ts';
 import { openSigner, type Signer } from '../src/signer/index.ts';
 import { randomBytes } from '@noble/hashes/utils.js';
 import {
@@ -388,4 +389,28 @@ export function decideWithPasskey(
     decision,
   });
   return http(s.port, `/approve/${id}`, { method: 'POST', body });
+}
+
+export function adapterCtx(over: Partial<AdapterContext> = {}): AdapterContext {
+  return {
+    agentId: 'nanocode',
+    idempotencyKey: 'k',
+    resourceHash: null,
+    resource: null,
+    now: T0,
+    random: (n) => new Uint8Array(n).fill(7),
+    decimalsFor: () => 6,
+    isRouteAllowed: () => true,
+    evm: {
+      allowedSelectors: ['0xa9059cbb', '0xe3ee160e'],
+      simulateBeforeSign: false,
+      maxNetworkFeeWei: 10n ** 15n,
+    },
+    tempo: {
+      allowClientPaidFees: false,
+      maxFeeUsd: 10_000n,
+      gasLimit: 300_000n,
+    },
+    ...over,
+  };
 }

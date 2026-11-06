@@ -4,16 +4,21 @@
 // passkey and connects Claude Code.
 // Run it from the repo as your normal user: npm run setup
 // (on Windows: from a terminal opened with "Run as administrator").
-import { spawn, spawnSync, type SpawnOptions } from 'node:child_process';
+import {
+  spawn,
+  spawnSync,
+  type SpawnOptions,
+  type SpawnSyncOptions,
+} from 'node:child_process';
 import { randomBytes } from 'node:crypto';
 import {
   existsSync,
-  mkdtempSync,
+  mkdirSync,
   readFileSync,
   rmSync,
   writeFileSync,
 } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
+import { homedir, hostname } from 'node:os';
 import { dirname, join, posix, resolve, win32 } from 'node:path';
 import { emitKeypressEvents } from 'node:readline';
 import { createInterface } from 'node:readline/promises';
@@ -375,7 +380,7 @@ function run(
   r: Runner,
   cmd: string,
   args: string[],
-  opts: SpawnOptions = {},
+  opts: SpawnSyncOptions = {},
 ): number {
   if (dry(r, cmd, args)) return 0;
   const res = spawnSync(cmd, args, { stdio: 'inherit', ...opts });
@@ -748,14 +753,15 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
 
   // 1. install
   step(1, total, 'Installing the daemon');
-  const tmp = mkdtempSync(join(tmpdir(), 'bursar-setup-'));
-  try {
-    const file = join(tmp, 'policy.yaml');
-    if (yaml !== null) writeFileSync(file, yaml, { mode: 0o600 });
-    const script = join(repo, LAYOUT.installer);
-    const code =
-      LAYOUT.os === 'win32'
-        ? run(r, 'powershell.exe', [
+  // The policy goes to the installer on stdin, never through a file: a file in
+  // the operator's temp dir could be rewritten by an agent running as the same
+  // user while sudo (or UAC) waits for the password.
+  const script = join(repo, LAYOUT.installer);
+  const [installCmd, installArgs] =
+    LAYOUT.os === 'win32'
+      ? [
+          'powershell.exe',
+          [
             '-NoProfile',
             '-ExecutionPolicy',
             'Bypass',
@@ -763,21 +769,26 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
             script,
             '-Node',
             process.execPath,
-            ...(yaml !== null ? ['-PolicyFile', file, '-ReplacePolicy'] : []),
-          ])
-        : run(r, '/usr/bin/sudo', [
+            ...(yaml !== null ? ['-PolicyStdin', '-ReplacePolicy'] : []),
+          ],
+        ]
+      : [
+          '/usr/bin/sudo',
+          [
             '/usr/bin/env',
             `NODE=${process.execPath}`,
-            ...(yaml !== null
-              ? [`POLICY_FILE=${file}`, 'REPLACE_POLICY=1']
-              : []),
+            ...(yaml !== null ? ['POLICY_STDIN=1', 'REPLACE_POLICY=1'] : []),
             script,
-          ]);
-    if (code !== 0)
-      throw new Error('the installer failed; nothing was connected');
-  } finally {
-    rmSync(tmp, { recursive: true, force: true });
-  }
+          ],
+        ];
+  const installCode = run(
+    r,
+    installCmd,
+    installArgs,
+    yaml === null ? {} : { input: yaml, stdio: ['pipe', 'inherit', 'inherit'] },
+  );
+  if (installCode !== 0)
+    throw new Error('the installer failed; nothing was connected');
 
   // 2. passkey
   step(
@@ -812,6 +823,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       'user',
     ]);
     run(r, rmCmd, rmArgs, { ...rmOpts, stdio: 'ignore' });
+    // The token goes in a file only this user can read: on a command line
+    // (`-e BURSAR_TOKEN=...`) every local user could see it in ps.
+    const tokenFile = join(homedir(), '.config', 'bursar', 'agent-token');
+    if (r.dryRun) say(c.dim(`  write ${tokenFile} (mode 600)`));
+    else {
+      mkdirSync(dirname(tokenFile), { recursive: true, mode: 0o700 });
+      // Recreate it so `mode` applies even if an older file had wider permissions.
+      rmSync(tokenFile, { force: true });
+      writeFileSync(tokenFile, `${token}\n`, { mode: 0o600 });
+    }
     const [addCmd, addArgs, addOpts] = claudeCommand([
       'mcp',
       'add',
@@ -821,7 +842,7 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
       '-e',
       `BURSAR_URL=${BURSAR_URL}`,
       '-e',
-      `BURSAR_TOKEN=${token}`,
+      `BURSAR_TOKEN_FILE=${tokenFile}`,
       '--',
       LAYOUT.node,
       LAYOUT.mcp,

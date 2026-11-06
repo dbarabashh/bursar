@@ -10,7 +10,9 @@
 #   powershell -NoProfile -ExecutionPolicy Bypass -File scripts\install-windows.ps1 -Node (Get-Command node).Source
 param(
   [Parameter(Mandatory = $true)][string]$Node,
-  [string]$PolicyFile,
+  # `npm run setup` pipes the policy in, so it never sits in a file a
+  # non-elevated process (an agent) could rewrite before this script reads it.
+  [switch]$PolicyStdin,
   [switch]$ReplacePolicy
 )
 $ErrorActionPreference = 'Stop'
@@ -218,6 +220,18 @@ Native sc.exe @('failure', $Name, 'reset=', '86400', 'actions=', 'restart/10000/
 Native icacls.exe @($Prefix, '/grant', "${Account}:(OI)(CI)RX") | Out-Null
 
 # ---------- state ----------
+# Any user may create folders in %ProgramData% and owns what it creates, and
+# icacls below keeps explicit ACEs it does not name. A state folder this
+# installer made is owned by Administrators (set just below) and only
+# Administrators and the service can write in it, so it is enough to refuse a
+# pre-existing folder with any other owner: someone else made it, may have
+# planted a key or policy and may keep write access.
+if (Test-Path -LiteralPath $State) {
+  $owner = (Get-Acl -LiteralPath $State).GetOwner([Security.Principal.SecurityIdentifier]).Value
+  if (@('S-1-5-32-544', 'S-1-5-18') -notcontains $owner) {
+    Die "$State is owned by $owner, not Administrators: this installer did not create it. Check what is inside, delete it as Administrator and run the install again"
+  }
+}
 New-Item -ItemType Directory -Force -Path $State | Out-Null
 Native icacls.exe @($State, '/setowner', $ADMINS) | Out-Null
 Native icacls.exe @($State, '/inheritance:r', '/grant:r', "${SYSTEM}:(OI)(CI)F", "${ADMINS}:(OI)(CI)F", "${Account}:(OI)(CI)M") | Out-Null
@@ -230,15 +244,16 @@ Lock-Secret $KeyPath
 
 $newToken = $null
 $backup = "$PolicyPath.bak"
-if ($PolicyFile) {
+if ($PolicyStdin) {
   # A policy prepared by `npm run setup`; it already holds its own agent token.
-  if (-not (Test-Path -PathType Leaf $PolicyFile)) { Die "PolicyFile $PolicyFile does not exist" }
+  $policyText = [Console]::In.ReadToEnd()
+  if ([string]::IsNullOrWhiteSpace($policyText)) { Die '-PolicyStdin but no policy came in on stdin' }
   if (Test-Path $PolicyPath) {
     if (-not $ReplacePolicy) { Die "$PolicyPath exists; pass -ReplacePolicy to replace it" }
     Copy-Item -Force $PolicyPath $backup
     Lock-Secret $backup
   }
-  Write-Utf8 $PolicyPath ([IO.File]::ReadAllText($PolicyFile))
+  Write-Utf8 $PolicyPath $policyText
   Write-Host "wrote $PolicyPath from setup (the service can only read it)"
 } elseif (-not (Test-Path $PolicyPath)) {
   # The same policy `npm run setup` writes with its defaults (testnet, careful limits).
@@ -254,7 +269,7 @@ Lock-Secret $PolicyPath
 
 & $NodeExe $Cli address --policy $PolicyPath | Out-Null
 if ($LASTEXITCODE -ne 0) {
-  if ($PolicyFile -and (Test-Path $backup)) {
+  if ($PolicyStdin -and (Test-Path $backup)) {
     Copy-Item -Force $backup $PolicyPath
     Lock-Secret $PolicyPath
     Die 'the new policy did not pass the check; the previous one is restored'

@@ -68,30 +68,38 @@ if [ ! -f "$STATE/key" ]; then
 fi
 
 NEW_TOKEN=
-if [ -n "${POLICY_FILE:-}" ]; then
-  # A policy prepared by `npm run setup`; it already holds its own agent token.
-  [ -f "$POLICY_FILE" ] || die "POLICY_FILE $POLICY_FILE does not exist"
+if [ "${POLICY_STDIN:-}" = 1 ]; then
+  # `npm run setup` pipes the policy in (it already holds its own agent token),
+  # so it never sits in a file the operator's user, and so an agent, could
+  # rewrite while sudo asks for the password.
   if [ -f "$STATE/policy.yaml" ]; then
     [ "${REPLACE_POLICY:-}" = 1 ] || die "$STATE/policy.yaml exists; pass REPLACE_POLICY=1 to replace it"
     cp -p "$STATE/policy.yaml" "$STATE/policy.yaml.bak"
   fi
-  install -o root -g $RUNAS -m 640 "$POLICY_FILE" "$STATE/policy.yaml"
+  NEW_POLICY=$(mktemp)
+  trap 'rm -f "$NEW_POLICY"' EXIT
+  cat > "$NEW_POLICY"
+  [ -s "$NEW_POLICY" ] || die "POLICY_STDIN=1 but no policy came in on stdin"
+  install -o root -g $RUNAS -m 640 "$NEW_POLICY" "$STATE/policy.yaml"
   echo "wrote $STATE/policy.yaml from setup (root owns it, $RUNAS can only read it)"
 elif [ ! -f "$STATE/policy.yaml" ]; then
   # The same policy `npm run setup` writes with its defaults (testnet, careful limits).
-  NEW_TOKEN=$(openssl rand -hex 24)
+  # The token goes in through the environment, not a command line that ps shows.
+  NEW_TOKEN=$("$PREFIX/bin/node" -e 'process.stdout.write(require("node:crypto").randomBytes(24).toString("hex"))')
   sudo -u $RUNAS "$PREFIX/bin/node" "$PREFIX/app/src/setup.ts" --print-policy --yes \
-    | sed "s/__AGENT_TOKEN_SET_BY_INSTALLER__/$NEW_TOKEN/" > "$STATE/policy.yaml"
-  if ! grep -q "$NEW_TOKEN" "$STATE/policy.yaml" || grep -q __AGENT_TOKEN_SET_BY_INSTALLER__ "$STATE/policy.yaml"; then
-    rm -f "$STATE/policy.yaml"
-    die "could not write the default policy (npm run setup -- --print-policy --yes failed)"
-  fi
+    | BURSAR_NEW_TOKEN="$NEW_TOKEN" "$PREFIX/bin/node" -e '
+        let s = "";
+        process.stdin.on("data", (d) => (s += d)).on("end", () => {
+          const p = "__AGENT_TOKEN_SET_BY_INSTALLER__";
+          if (!s.includes(p)) process.exit(1);
+          process.stdout.write(s.replace(p, process.env.BURSAR_NEW_TOKEN));
+        });' > "$STATE/policy.yaml" || { rm -f "$STATE/policy.yaml"; die "could not write the default policy (npm run setup -- --print-policy --yes failed)"; }
   chown root:$RUNAS "$STATE/policy.yaml"
   chmod 640 "$STATE/policy.yaml"
   echo "wrote $STATE/policy.yaml (root owns it, $RUNAS can only read it)"
 fi
 if ! sudo -u $RUNAS "$PREFIX/bin/node" "$PREFIX/app/src/index.ts" address --policy "$STATE/policy.yaml" >/dev/null; then
-  if [ -n "${POLICY_FILE:-}" ] && [ -f "$STATE/policy.yaml.bak" ]; then
+  if [ "${POLICY_STDIN:-}" = 1 ] && [ -f "$STATE/policy.yaml.bak" ]; then
     mv "$STATE/policy.yaml.bak" "$STATE/policy.yaml"
     die "the new policy did not pass the check; the previous one is restored"
   fi

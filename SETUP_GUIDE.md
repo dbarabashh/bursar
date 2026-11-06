@@ -331,12 +331,13 @@ bursar deliberately has no "send everything to X" command. The emergency exit is
 
 ## 11. The rules that hold all of this together
 
+1. **Run `npm run setup` yourself, while no agent is running, from a clean checkout** (`git status` shows nothing). Setup runs code from the repo as root; an agent that can edit the repo could change what gets installed.
 1. **Never let Claude Code run `sudo`.** Do not set up passwordless sudo, and do not run `sudo` through the agent. If your sudo uses Touch ID, treat every unexpected Touch ID prompt as an alarm, not a formality.
-2. **Approve only payments you expect.** On the approval page, read the amount and the recipient _before_ you touch the sensor. If an agent or a website opened an approval page you did not ask for, press Deny.
-3. **The key lives only in `/var/db/bursar`.** Do not copy it into the repo, a `.env` file or a chat.
-4. **Limits = an amount you can afford to lose.** Raise them gradually, and only after reading `bursar report` for a few days.
-5. **Press "Always allow" only for a service you chose yourself.** The allowlist is the main defence against prompt injection like "pay here instead". If the page shows a service you did not ask for, or the agent asks you to allow something unexpected, press Deny. "Allow once" is there for one-off purchases.
-6. **Keep little on the wallet.** Top it up for a week, not for a year.
+1. **Approve only payments you expect.** On the approval page, read the amount and the recipient _before_ you touch the sensor. If an agent or a website opened an approval page you did not ask for, press Deny.
+1. **The key lives only in `/var/db/bursar`.** Do not copy it into the repo, a `.env` file or a chat.
+1. **Limits = an amount you can afford to lose.** Raise them gradually, and only after reading `bursar report` for a few days.
+1. **Press "Always allow" only for a service you chose yourself.** The allowlist is the main defence against prompt injection like "pay here instead". If the page shows a service you did not ask for, or the agent asks you to allow something unexpected, press Deny. "Allow once" is there for one-off purchases.
+1. **Keep little on the wallet.** Top it up for a week, not for a year.
 
 ---
 

@@ -189,6 +189,10 @@ export function createApp(deps: AppDeps) {
   const now = deps.now ?? (() => Date.now());
   const random = deps.random ?? randomBytes;
   const approvalMethod = policy.limits.approval?.method ?? 'cli';
+  // The blockhash is the only thing binding a Solana tx to a cluster, so an
+  // agent-supplied one is trusted only when the policy allows a single cluster.
+  const oneSolanaCluster =
+    policy.allow.chains.filter((c) => c.startsWith('solana:')).length === 1;
   let boundPort = policy.server.port;
   const approvalOrigin = () =>
     deps.approvalOrigin ?? `http://localhost:${boundPort}`;
@@ -222,9 +226,12 @@ export function createApp(deps: AppDeps) {
 
   async function prepare(intent: PaymentIntent): Promise<string | null> {
     const p = intent.raw as SignPlan;
-    if (p.kind === 'x402-svm' && p.blockhash === null) {
+    if (p.kind === 'x402-svm') {
       const url = policy.rpc[intent.chain];
-      if (url === undefined) return 'missing_recent_blockhash';
+      if (url === undefined)
+        return p.blockhash !== null && oneSolanaCluster
+          ? null
+          : 'missing_recent_blockhash';
       const bh = await fetchSolanaBlockhash(url);
       if (bh === null) return 'rpc_unavailable';
       p.blockhash = bh;

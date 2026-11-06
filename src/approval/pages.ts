@@ -118,7 +118,8 @@ export function approvalPage(
   const header = fresh
     ? `<h1>${title}</h1>
 <p class="muted">Agent <b>${escapeHtml(view.agent)}</b> wants to pay a recipient that is not on your list yet.</p>
-<p class="service">${escapeHtml(recipientLabel(view.resourceUrl ?? null))}</p>
+<p class="service">${escapeHtml(String(intent['recipient'] ?? ''))}</p>
+${view.resourceUrl ? `<p class="muted">For ${escapeHtml(recipientLabel(view.resourceUrl))}, as reported by the agent (not verified: check the recipient address).</p>` : ''}
 ${amount}
 <p class="note">“Always allow” adds this recipient on this chain to your list. Later payments to it still follow every limit, and amounts above your approval threshold still ask you. Remove it any time with <code>bursar recipients remove</code>.</p>`
     : `<h1>Payment approval</h1>

@@ -83,10 +83,23 @@ export function checkAllowlist(
   const matches = [...policy.allow.recipients, ...learned].filter(
     (r) => r.address === addr,
   );
+  // A max_usd_day set for the address applies on every chain, including
+  // chains it was only learned on or is being asked for.
+  let cap: bigint | null = null;
+  for (const r of matches)
+    if (r.maxUsdDay !== null && (cap === null || r.maxUsdDay < cap))
+      cap = r.maxUsdDay;
+  const capped = (r: RecipientRule): RecipientRule =>
+    cap === null ? r : { ...r, maxUsdDay: cap };
   const rule = matches.find((r) => onChain(r.chains, intent.chain));
-  if (rule) return { ok: true, asset, recipient: rule, unknown: false };
+  if (rule) return { ok: true, asset, recipient: capped(rule), unknown: false };
   if (policy.allow.unknownRecipients === 'ask')
-    return { ok: true, asset, recipient: null, unknown: true };
+    return {
+      ok: true,
+      asset,
+      recipient: cap === null ? null : capped({ ...matches[0]!, chains: null }),
+      unknown: true,
+    };
   return {
     ok: false,
     reason:

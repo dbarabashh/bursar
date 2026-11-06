@@ -6,7 +6,7 @@ import { ed25519 } from '@noble/curves/ed25519.js';
 import { addr, Transaction } from 'micro-eth-signer';
 import * as sol from 'micro-sol-signer';
 import { computeResourceHash, type MppTempoPlan } from '../src/intent.ts';
-import { AdapterError, type AdapterContext } from '../src/protocols/common.ts';
+import { AdapterError } from '../src/protocols/common.ts';
 import {
   applyTempoGasPrice,
   parseMpp,
@@ -16,6 +16,7 @@ import { createServer } from 'node:http';
 import type { AddressInfo } from 'node:net';
 import { parseX402 } from '../src/protocols/x402.ts';
 import {
+  adapterCtx,
   cleanup,
   erc20TransferData,
   EVM_KEY,
@@ -28,36 +29,13 @@ import {
   SOL_KEY,
   SOL_MERCHANT,
   STRANGER,
-  T0,
+  usdc,
   USDC_BASE,
   USDC_SOL,
-  usdc,
   x402Body,
 } from './helpers.ts';
 
-function ctx(over: Partial<AdapterContext> = {}): AdapterContext {
-  return {
-    agentId: 'nanocode',
-    idempotencyKey: 'k',
-    resourceHash: null,
-    resource: null,
-    now: T0,
-    random: (n) => new Uint8Array(n).fill(7),
-    decimalsFor: () => 6,
-    isRouteAllowed: () => true,
-    evm: {
-      allowedSelectors: ['0xa9059cbb', '0xe3ee160e'],
-      simulateBeforeSign: false,
-      maxNetworkFeeWei: 10n ** 15n,
-    },
-    tempo: {
-      allowClientPaidFees: false,
-      maxFeeUsd: 10_000n,
-      gasLimit: 300_000n,
-    },
-    ...over,
-  };
-}
+const ctx = adapterCtx;
 
 describe('x402 adapter', () => {
   it('derives recipient and amount from the signed requirement, ignoring agent-supplied fields', async () => {

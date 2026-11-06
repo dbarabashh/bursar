@@ -1,3 +1,4 @@
+import { readFileSync } from 'node:fs';
 import { createInterface } from 'node:readline';
 import { randomUUID } from 'node:crypto';
 import { computeResourceHash } from '../intent.ts';
@@ -466,11 +467,29 @@ export function createMcpServer(deps: McpDeps) {
   return { handle, callTool };
 }
 
+// BURSAR_TOKEN_FILE lets setup register the server without putting the token
+// on a command line, where other local users can read it. An unreadable file
+// throws, so the error names it instead of a generic "set BURSAR_TOKEN".
+export function readToken(env: NodeJS.ProcessEnv): string | undefined {
+  const file = env['BURSAR_TOKEN_FILE'];
+  return (
+    env['BURSAR_TOKEN'] ||
+    (file ? readFileSync(file, 'utf8').trim() : undefined) ||
+    undefined
+  );
+}
+
 export function runStdio(env: NodeJS.ProcessEnv = process.env): void {
-  const token = env['BURSAR_TOKEN'];
+  let token: string | undefined;
+  try {
+    token = readToken(env);
+  } catch (e) {
+    process.stderr.write(`bursar-mcp: ${(e as Error).message}\n`);
+    process.exit(1);
+  }
   if (!token) {
     process.stderr.write(
-      "bursar-mcp: set BURSAR_TOKEN to this agent's token\n",
+      "bursar-mcp: set BURSAR_TOKEN (or BURSAR_TOKEN_FILE) to this agent's token\n",
     );
     process.exit(1);
   }
