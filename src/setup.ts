@@ -806,12 +806,16 @@ export async function main(argv = process.argv.slice(2)): Promise<void> {
             script,
           ],
         ];
-  const installCode = run(
-    r,
-    installCmd,
-    installArgs,
-    yaml === null ? {} : { input: yaml, stdio: ['pipe', 'inherit', 'inherit'] },
-  );
+  const installCode = run(r, installCmd, installArgs, {
+    ...(yaml === null
+      ? {}
+      : { input: yaml, stdio: ['pipe', 'inherit', 'inherit'] }),
+    // Started from pwsh, Windows PowerShell inherits a PSModulePath it cannot
+    // load its own modules from; let it use its defaults (undefined = unset).
+    ...(LAYOUT.os === 'win32'
+      ? { env: { ...process.env, PSModulePath: undefined } }
+      : {}),
+  });
   if (installCode !== 0)
     throw new Error('the installer failed; nothing was connected');
 

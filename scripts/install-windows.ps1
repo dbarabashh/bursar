@@ -69,11 +69,17 @@ $NodeZip = Join-Path $NodeTmp 'node.zip'
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 $ProgressPreference = 'SilentlyContinue'
 Invoke-WebRequest -UseBasicParsing -Uri "https://nodejs.org/dist/$NodeVersion/node-$NodeVersion-win-x64.zip" -OutFile $NodeZip
-if ((Get-FileHash -Algorithm SHA256 $NodeZip).Hash -ne $NodeSha256) {
+# .NET directly, not Get-FileHash / Expand-Archive: those live in script modules
+# that Windows PowerShell cannot load when started from pwsh (PSModulePath).
+$sha = [Security.Cryptography.SHA256]::Create()
+$stream = [IO.File]::OpenRead($NodeZip)
+try { $got = -join ($sha.ComputeHash($stream) | ForEach-Object { $_.ToString('x2') }) } finally { $stream.Dispose() }
+if ($got -ne $NodeSha256) {
   Remove-Item -Recurse -Force $NodeTmp
   Die "node-$NodeVersion-win-x64.zip does not match its pinned SHA-256; not installing it"
 }
-Expand-Archive -Path $NodeZip -DestinationPath $NodeTmp
+Add-Type -AssemblyName System.IO.Compression.FileSystem
+[IO.Compression.ZipFile]::ExtractToDirectory($NodeZip, $NodeTmp)
 $NodeExeSrc = Join-Path $NodeTmp "node-$NodeVersion-win-x64\node.exe"
 Write-Host "downloaded Node $NodeVersion (SHA-256 checked)"
 
