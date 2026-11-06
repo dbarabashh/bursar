@@ -34,9 +34,14 @@ describe('audit: passkey registration URL in argv', () => {
     );
     try {
       await new Promise((r) => setTimeout(r, 300));
-      // The agent: list every process's argv and grep for the token.
-      const ps = spawnSync('ps', ['-axo', 'args'], { encoding: 'utf8' });
-      const m = /http:\/\/localhost:(\d+)(\/[A-Za-z0-9_-]{32})/.exec(ps.stdout);
+      // The agent: list every process's argv and grep for the token. Windows
+      // has no `ps` (the argv is still readable there, via WMI), so take the
+      // leak as given: what matters is that knowing the URL is not enough.
+      const leaked =
+        process.platform === 'win32'
+          ? session.url
+          : spawnSync('ps', ['-axo', 'args'], { encoding: 'utf8' }).stdout;
+      const m = /http:\/\/localhost:(\d+)(\/[A-Za-z0-9_-]{32})/.exec(leaked);
       assert.ok(m, 'registration URL visible in ps output');
       const port = Number(m[1]);
       const path = m[2]!;

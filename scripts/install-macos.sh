@@ -126,8 +126,19 @@ cat > "$PLIST" <<PL
 PL
 chown root:wheel "$PLIST"
 chmod 644 "$PLIST"
+# bootout returns before the old job is gone; bootstrapping too early fails
+# with "5: Input/output error", so wait for it and retry a few times.
 launchctl bootout system/$LABEL 2>/dev/null || true
-launchctl bootstrap system "$PLIST"
+for _ in 1 2 3 4 5 6 7 8 9 10; do
+  launchctl print system/$LABEL >/dev/null 2>&1 || break
+  sleep 1
+done
+loaded=
+for _ in 1 2 3 4 5; do
+  if launchctl bootstrap system "$PLIST" 2>/dev/null; then loaded=1; break; fi
+  sleep 2
+done
+[ -n "$loaded" ] || launchctl bootstrap system "$PLIST" || die "launchd could not load $PLIST (see: sudo launchctl print system/$LABEL)"
 sleep 2
 echo
 echo "daemon: launchctl print system/$LABEL | grep state"
