@@ -13,6 +13,10 @@ Minimal local wallet for AI agents with spending limits, allowlists & passkey ap
 - Human approval with Touch ID and other passkeys
 - MCP server for Claude Code and other agents
 
+[![Claude Code buys coffee market data with Cashu ecash through bursar](docs/demo.png)](docs/demo.mp4)
+
+Claude Code buys data from a paid API with Cashu ecash: the first payment to a new service and one above the approval threshold wait for Touch ID, and a 250 sat request over the 100 sat per-payment limit is refused. Testnet mint, sample merchant and data.
+
 ## Install (macOS, Linux, Windows)
 
 ```sh
